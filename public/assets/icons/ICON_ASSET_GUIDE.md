@@ -58,5 +58,5 @@ This folder contains small transparent PNG illustrations for the Japan 2026 trav
 }
 ```
 
-- In Vite/React, public assets can be referenced with paths like `/assets/icons/tag-food.png`.
+- In Vite/React, public assets can be referenced with `import.meta.env.BASE_URL`, for example `${import.meta.env.BASE_URL}assets/icons/tag-food.png`.
 - The existing app also uses lucide icons. Use these PNGs where a warmer illustrated tag style is desired, and lucide icons where controls/actions need compact symbol clarity.

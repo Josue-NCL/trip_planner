@@ -36,7 +36,7 @@ const TIME_GRID_END_MINUTES = 22 * 60;
 const TIME_GRID_STEP_MINUTES = 30;
 const DAY_TIME_GRID_ROW_HEIGHT = 48;
 const TRIP_TIME_GRID_ROW_HEIGHT = 60;
-const ICON_BASE = "/assets/icons/";
+const ICON_BASE = `${import.meta.env.BASE_URL}assets/icons/`;
 
 const TAG_ASSETS = {
   category: {
