@@ -9,14 +9,15 @@ This file is the handoff map for future coding agents working on the Japan 2026 
 - Main UI file: `src/App.jsx`.
 - Styling: `src/styles.css`.
 - Seed data and static options: `src/data/tripData.js`.
-- Current persistence: `src/lib/storage.js` using `localStorage`.
+- Current persistence: Supabase via `src/lib/tripRepository.js`.
+- Legacy local planner import: `src/lib/storage.js` using `localStorage`.
 - Current export path: `src/lib/export.js` downloading `japan-2026-trip.json`.
 
 ## Current Backend State
 
-There is no application backend yet. Supabase MCP connectivity has been verified for read and transaction-scoped write checks, and the connected `public` schema currently has no tables.
+Supabase is the application backend. The connected project has normalized planner tables, RLS enabled, private RLS helper functions, and realtime publication entries for planner tables.
 
-Do not assume Supabase application tables exist until `mcp__supabase.list_tables` confirms them.
+Always confirm schema state with `mcp__supabase.list_tables` before making further schema changes.
 
 ## Local Commands
 
@@ -57,10 +58,10 @@ The current UI expects a single trip object with this broad shape:
 }
 ```
 
-Keep compatibility with that shape until the UI has a dedicated Supabase adapter and import/export migration path.
+Keep compatibility with that shape. `src/lib/tripMappers.js` translates between React state and normalized rows.
 
 ## Collaboration Notes
 
 - The worktree may contain user edits. Check `git status --short` before editing and do not revert unrelated changes.
 - Keep docs and code changes scoped. This app is small, so direct, readable modules are preferred over broad abstraction.
-- If adding Supabase client code, place it behind a small data module under `src/lib/` before touching UI flows.
+- Keep Supabase client code behind modules under `src/lib/` before touching UI flows.

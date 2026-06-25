@@ -11,6 +11,8 @@ import {
   GripVertical,
   Heart,
   Landmark,
+  LogOut,
+  Mail,
   MapPin,
   MoreVertical,
   PanelLeftClose,
@@ -25,8 +27,11 @@ import {
   X
 } from "lucide-react";
 import { CATEGORIES, makeInitialTrip, STATUSES } from "./data/tripData.js";
+import { ensureUserProfile, getCurrentSession, onAuthSessionChange, sendMagicLink, signOut } from "./lib/auth.js";
 import { downloadTripExport } from "./lib/export.js";
-import { isValidTrip, loadTrip, mergeIdeas, resetTripStorage, saveTrip } from "./lib/storage.js";
+import { isSupabaseConfigured } from "./lib/supabaseClient.js";
+import { isValidTrip, loadTrip, mergeIdeas } from "./lib/storage.js";
+import { createTripFromPayload, listTrips, loadRemoteTrip, replaceTripPayload, subscribeToTripChanges } from "./lib/tripRepository.js";
 
 const DAY_MINUTES = 12 * 60;
 const FILTER_TABS = ["Ideas", "All", "Booked", "Maybe"];
@@ -120,6 +125,16 @@ const VOTE_LABELS = {
 function App() {
   const [trip, setTrip] = useState(loadTrip);
   const [selectedDayId, setSelectedDayId] = useState(() => trip.days[0]?.id);
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
+  const [tripSummaries, setTripSummaries] = useState([]);
+  const [selectedTripId, setSelectedTripId] = useState(null);
+  const [tripListStatus, setTripListStatus] = useState("idle");
+  const [tripLoading, setTripLoading] = useState(false);
+  const [tripLoaded, setTripLoaded] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("idle");
   const [activeView, setActiveView] = useState("trip");
   const [tripBoardMode, setTripBoardMode] = useState("calendar");
   const [dayViewMode, setDayViewMode] = useState("timeline");
@@ -134,18 +149,67 @@ function App() {
   const [pendingImport, setPendingImport] = useState(null);
   const [toasts, setToasts] = useState([]);
   const fileInputRef = useRef(null);
+  const pickerFileInputRef = useRef(null);
   const toastTimersRef = useRef(new Map());
+  const saveTimerRef = useRef(null);
+  const realtimeTimerRef = useRef(null);
+  const skipNextSaveRef = useRef(false);
 
   useEffect(() => {
-    saveTrip(trip);
-  }, [trip]);
+    if (!isSupabaseConfigured) {
+      setAuthLoading(false);
+      return undefined;
+    }
 
-  useEffect(() => {
+    let isMounted = true;
+    getCurrentSession()
+      .then((currentSession) => {
+        if (isMounted) {
+          setSession(currentSession);
+        }
+      })
+      .catch((error) => {
+        if (isMounted) {
+          setAuthMessage(error.message);
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setAuthLoading(false);
+        }
+      });
+
+    const unsubscribe = onAuthSessionChange((nextSession) => {
+      setSession(nextSession);
+      if (!nextSession) {
+        setSelectedTripId(null);
+        setTripLoaded(false);
+        setTripSummaries([]);
+      }
+    });
+
     return () => {
+      isMounted = false;
+      unsubscribe();
       toastTimersRef.current.forEach((timer) => window.clearTimeout(timer));
       toastTimersRef.current.clear();
+      window.clearTimeout(saveTimerRef.current);
+      window.clearTimeout(realtimeTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    ensureUserProfile(session)
+      .then(() => refreshTripSummaries())
+      .catch((error) => {
+        setTripListStatus("error");
+        showToast({ type: "error", message: error.message });
+      });
+  }, [session]);
 
   const sortedDays = useMemo(() => deriveTripDays(trip.days), [trip.days]);
 
@@ -167,6 +231,183 @@ function App() {
     [trip.ideas, ideaTab, categoryFilter]
   );
   const dateRangeLabel = useMemo(() => formatTripRange(sortedDays), [sortedDays]);
+
+  useEffect(() => {
+    if (!session || !selectedTripId) {
+      return;
+    }
+
+    let isCurrent = true;
+    setTripLoading(true);
+    setTripLoaded(false);
+    setSyncStatus("loading");
+    loadRemoteTrip(selectedTripId)
+      .then((remoteTrip) => {
+        if (!isCurrent) {
+          return;
+        }
+        skipNextSaveRef.current = true;
+        setTrip(remoteTrip);
+        const remoteDays = deriveTripDays(remoteTrip.days);
+        setSelectedDayId(remoteDays[0]?.id);
+        setActiveView("trip");
+        setTripBoardMode("calendar");
+        setTripLoaded(true);
+        setSyncStatus("synced");
+      })
+      .catch((error) => {
+        if (isCurrent) {
+          setSyncStatus("error");
+          showToast({ type: "error", message: error.message });
+        }
+      })
+      .finally(() => {
+        if (isCurrent) {
+          setTripLoading(false);
+        }
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [selectedTripId, session]);
+
+  useEffect(() => {
+    if (!session || !selectedTripId || !tripLoaded) {
+      return undefined;
+    }
+
+    if (skipNextSaveRef.current) {
+      skipNextSaveRef.current = false;
+      return undefined;
+    }
+
+    window.clearTimeout(saveTimerRef.current);
+    setSyncStatus("saving");
+    const snapshot = { ...trip, dateRangeLabel };
+    saveTimerRef.current = window.setTimeout(() => {
+      replaceTripPayload(selectedTripId, snapshot)
+        .then(() => {
+          setSyncStatus("saved");
+          refreshTripSummaries({ silent: true });
+        })
+        .catch((error) => {
+          setSyncStatus("error");
+          showToast({ type: "error", message: error.message });
+        });
+    }, 800);
+
+    return () => {
+      window.clearTimeout(saveTimerRef.current);
+    };
+  }, [trip, dateRangeLabel, selectedTripId, session, tripLoaded]);
+
+  useEffect(() => {
+    if (!session || !selectedTripId || !tripLoaded) {
+      return undefined;
+    }
+
+    return subscribeToTripChanges(selectedTripId, () => {
+      window.clearTimeout(realtimeTimerRef.current);
+      realtimeTimerRef.current = window.setTimeout(() => {
+        loadRemoteTrip(selectedTripId)
+          .then((remoteTrip) => {
+            skipNextSaveRef.current = true;
+            setTrip(remoteTrip);
+            setSyncStatus("synced");
+          })
+          .catch((error) => {
+            setSyncStatus("error");
+            showToast({ type: "error", message: error.message });
+          });
+      }, 1000);
+    });
+  }, [selectedTripId, session, tripLoaded]);
+
+  async function refreshTripSummaries({ silent = false } = {}) {
+    if (!silent) {
+      setTripListStatus("loading");
+    }
+    const summaries = await listTrips(session?.user?.id);
+    setTripSummaries(summaries);
+    setTripListStatus("ready");
+  }
+
+  async function handleMagicLinkSubmit(event) {
+    event.preventDefault();
+    if (!authEmail.trim()) {
+      return;
+    }
+
+    setAuthMessage("Sending magic link...");
+    try {
+      await sendMagicLink(authEmail.trim());
+      setAuthMessage("Check your email for the sign-in link.");
+    } catch (error) {
+      setAuthMessage(error.message);
+    }
+  }
+
+  async function handleSignOut() {
+    try {
+      await signOut();
+      setSession(null);
+      setSelectedTripId(null);
+      setTripLoaded(false);
+      setSyncStatus("idle");
+    } catch (error) {
+      showToast({ type: "error", message: error.message });
+    }
+  }
+
+  async function createTrip(payload) {
+    if (!session?.user) {
+      return;
+    }
+
+    setTripListStatus("loading");
+    try {
+      const nextTripId = await createTripFromPayload({ ...payload, dateRangeLabel: formatTripRange(deriveTripDays(payload.days)) }, session.user.id);
+      await refreshTripSummaries({ silent: true });
+      setSelectedTripId(nextTripId);
+      showToast({ type: "success", message: "Trip created" });
+    } catch (error) {
+      setTripListStatus("error");
+      showToast({ type: "error", message: error.message });
+    }
+  }
+
+  function createStarterTrip() {
+    createTrip(makeInitialTrip());
+  }
+
+  function importLocalPlanner() {
+    createTrip(loadTrip());
+  }
+
+  function handlePickerImportFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result));
+        if (!isValidTrip(parsed)) {
+          showToast({ type: "error", message: "Import file is not valid" });
+          return;
+        }
+        createTrip(parsed);
+      } catch {
+        showToast({ type: "error", message: "Import file could not be read" });
+      } finally {
+        event.target.value = "";
+      }
+    };
+    reader.readAsText(file);
+  }
 
   function updateTripDetails(changes) {
     setTrip((current) => ({ ...current, ...changes }));
@@ -533,10 +774,9 @@ function App() {
   }
 
   function resetPlanner() {
-    if (!window.confirm("Reset this planner to the starter Japan 2026 trip?")) {
+    if (!window.confirm("Reset this Supabase trip to the starter Japan 2026 trip?")) {
       return;
     }
-    resetTripStorage();
     const starterTrip = makeInitialTrip();
     const starterDays = deriveTripDays(starterTrip.days);
     setTrip(starterTrip);
@@ -544,6 +784,46 @@ function App() {
     setActiveView("trip");
     setTripBoardMode("calendar");
     showToast({ type: "success", message: "Planner reset" });
+  }
+
+  if (!isSupabaseConfigured) {
+    return <ConfigState title="Supabase needs environment variables" message="Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then restart the Vite dev server." />;
+  }
+
+  if (authLoading) {
+    return <ConfigState title="Checking session" message="Restoring your Supabase session..." />;
+  }
+
+  if (!session) {
+    return (
+      <AuthScreen
+        email={authEmail}
+        message={authMessage}
+        onEmailChange={setAuthEmail}
+        onSubmit={handleMagicLinkSubmit}
+      />
+    );
+  }
+
+  if (!selectedTripId) {
+    return (
+      <TripPicker
+        email={session.user.email}
+        trips={tripSummaries}
+        status={tripListStatus}
+        pickerFileInputRef={pickerFileInputRef}
+        onRefresh={() => refreshTripSummaries()}
+        onSelect={setSelectedTripId}
+        onCreateStarter={createStarterTrip}
+        onImportLocal={importLocalPlanner}
+        onImportFile={handlePickerImportFile}
+        onSignOut={handleSignOut}
+      />
+    );
+  }
+
+  if (tripLoading && !tripLoaded) {
+    return <ConfigState title="Loading trip" message="Pulling the latest planner from Supabase..." />;
   }
 
   return (
@@ -565,6 +845,14 @@ function App() {
         <ViewSwitcher activeView={activeView} ideasCount={trip.ideas.length} onChange={setActiveView} />
 
         <div className="topbar-actions">
+          <select className="trip-select" value={selectedTripId ?? ""} onChange={(event) => setSelectedTripId(Number(event.target.value))} aria-label="Switch trip">
+            {tripSummaries.map((summary) => (
+              <option key={summary.id} value={summary.id}>
+                {summary.name}
+              </option>
+            ))}
+          </select>
+          <span className={`sync-badge is-${syncStatus}`}>{formatSyncStatus(syncStatus)}</span>
           <button className="ghost-button" type="button" onClick={exportTrip}>
             <Download size={17} />
             Export
@@ -576,6 +864,9 @@ function App() {
           <input ref={fileInputRef} className="file-input" type="file" accept="application/json" onChange={handleImportFile} />
           <button className="icon-button" type="button" aria-label="Reset planner" onClick={resetPlanner}>
             <RefreshCcw size={18} />
+          </button>
+          <button className="icon-button" type="button" aria-label="Sign out" onClick={handleSignOut}>
+            <LogOut size={18} />
           </button>
         </div>
       </header>
@@ -698,7 +989,7 @@ function App() {
           <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="import-title">
             <h2 id="import-title">Import trip data?</h2>
             <p>
-              This file contains {pendingImport.days.length} days and {pendingImport.ideas.length} ideas. Choose how to bring it into this planner.
+              This file contains {pendingImport.days.length} days and {pendingImport.ideas.length} ideas. Choose how to bring it into this Supabase trip.
             </p>
             <div className="dialog-actions">
               <button className="ghost-button" type="button" onClick={() => setPendingImport(null)}>
@@ -716,6 +1007,118 @@ function App() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function AuthScreen({ email, message, onEmailChange, onSubmit }) {
+  return (
+    <main className="auth-shell">
+      <section className="auth-panel" aria-labelledby="auth-title">
+        <div className="auth-brand">
+          <img className="title-flag" src="./assets/japan-flag-title.png" alt="" aria-hidden="true" />
+          <div>
+            <p>Japan 2026</p>
+            <h1 id="auth-title">Sign in to sync your planner</h1>
+          </div>
+        </div>
+        <form className="auth-form" onSubmit={onSubmit}>
+          <label>
+            Email
+            <input type="email" value={email} onChange={(event) => onEmailChange(event.target.value)} placeholder="you@example.com" required />
+          </label>
+          <button className="primary-button" type="submit">
+            <Mail size={17} />
+            Send magic link
+          </button>
+        </form>
+        {message ? <p className="auth-message">{message}</p> : null}
+      </section>
+    </main>
+  );
+}
+
+function TripPicker({
+  email,
+  trips,
+  status,
+  pickerFileInputRef,
+  onRefresh,
+  onSelect,
+  onCreateStarter,
+  onImportLocal,
+  onImportFile,
+  onSignOut
+}) {
+  const isLoading = status === "loading";
+
+  return (
+    <main className="trip-picker-shell">
+      <section className="trip-picker" aria-labelledby="trip-picker-title">
+        <header className="trip-picker-header">
+          <div className="auth-brand">
+            <img className="title-flag" src="./assets/japan-flag-title.png" alt="" aria-hidden="true" />
+            <div>
+              <p>{email}</p>
+              <h1 id="trip-picker-title">Choose a trip</h1>
+            </div>
+          </div>
+          <button className="icon-button" type="button" aria-label="Sign out" onClick={onSignOut}>
+            <LogOut size={18} />
+          </button>
+        </header>
+
+        <div className="trip-picker-actions">
+          <button className="primary-button" type="button" onClick={onCreateStarter} disabled={isLoading}>
+            <Plus size={17} />
+            New Japan 2026 trip
+          </button>
+          <button className="ghost-button" type="button" onClick={onImportLocal} disabled={isLoading}>
+            <RefreshCcw size={17} />
+            Import local planner
+          </button>
+          <button className="ghost-button" type="button" onClick={() => pickerFileInputRef.current?.click()} disabled={isLoading}>
+            <FileUp size={17} />
+            Import JSON
+          </button>
+          <button className="ghost-button" type="button" onClick={onRefresh} disabled={isLoading}>
+            <RefreshCcw size={17} />
+            Refresh
+          </button>
+          <input ref={pickerFileInputRef} className="file-input" type="file" accept="application/json" onChange={onImportFile} />
+        </div>
+
+        <div className="trip-list">
+          {trips.map((tripSummary) => (
+            <button className="trip-list-item" key={tripSummary.id} type="button" onClick={() => onSelect(tripSummary.id)}>
+              <span>
+                <strong>{tripSummary.name}</strong>
+                <small>{tripSummary.dateRangeLabel || "No date range"} · {tripSummary.role}</small>
+              </span>
+              <ExternalLink size={16} />
+            </button>
+          ))}
+          {!trips.length && !isLoading ? <p className="empty-trip-list">No Supabase trips yet. Create one from the starter trip or import your local planner.</p> : null}
+          {isLoading ? <p className="empty-trip-list">Loading trips...</p> : null}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function ConfigState({ title, message }) {
+  return (
+    <main className="auth-shell">
+      <section className="auth-panel" aria-labelledby="config-title">
+        <div className="auth-brand">
+          <img className="title-flag" src="./assets/japan-flag-title.png" alt="" aria-hidden="true" />
+          <div>
+            <p>Japan 2026</p>
+            <h1 id="config-title">{title}</h1>
+          </div>
+        </div>
+        <p className="auth-message">{message}</p>
+      </section>
+    </main>
   );
 }
 
@@ -1923,6 +2326,19 @@ function formatCategoryFilterLabel(category) {
     return "Open";
   }
   return getCategoryConfig(category).label;
+}
+
+function formatSyncStatus(status) {
+  const labels = {
+    idle: "Ready",
+    loading: "Loading",
+    saving: "Saving",
+    saved: "Saved",
+    synced: "Synced",
+    error: "Sync issue"
+  };
+
+  return labels[status] ?? "Ready";
 }
 
 function getDayStats(day) {

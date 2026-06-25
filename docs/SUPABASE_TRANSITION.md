@@ -3,13 +3,14 @@
 ## Current State
 
 - Supabase MCP is reachable.
-- `public` schema currently reports no tables.
-- The app currently persists one complete trip document in `localStorage`.
-- JSON export/import should remain available during the transition as a backup and migration path.
+- The connected project has planner tables in `public`.
+- The app uses Supabase Auth, normalized tables, and realtime refetching.
+- `localStorage` is now only used as an import source for existing browser-only planner data.
+- JSON export/import remains available as a backup and migration path.
 
-## Target Outcome
+## Implemented Outcome
 
-Move from private, browser-only planning to shared, authenticated trip data in Supabase while preserving the current UI behavior.
+The app has moved from private, browser-only planning to shared, authenticated trip data in Supabase while preserving the current UI behavior.
 
 ## Environment Variables
 
@@ -22,7 +23,7 @@ VITE_SUPABASE_ANON_KEY=
 
 Never expose service-role keys or database passwords in Vite client code.
 
-## Proposed Tables
+## Implemented Tables
 
 Use lowercase `snake_case`, `bigint generated always as identity` primary keys, `timestamptz` audit fields, and indexed foreign keys.
 
@@ -45,12 +46,23 @@ trips
 trip_members
 - trip_id bigint references trips(id)
 - profile_id uuid references profiles(id)
-- role text check in ('owner', 'editor', 'viewer')
+- role text check in ('owner', 'editor')
 - created_at timestamptz
+
+trip_travelers
+- id bigint primary key
+- trip_id bigint references trips(id)
+- client_id text
+- name text
+- profile_id uuid references profiles(id)
+- sort_order integer
+- created_at timestamptz
+- updated_at timestamptz
 
 trip_days
 - id bigint primary key
 - trip_id bigint references trips(id)
+- client_id text
 - trip_date date
 - day_number integer
 - city text
@@ -61,6 +73,7 @@ trip_days
 schedule_items
 - id bigint primary key
 - trip_day_id bigint references trip_days(id)
+- client_id text
 - title text
 - category text
 - city text
@@ -78,6 +91,7 @@ schedule_items
 ideas
 - id bigint primary key
 - trip_id bigint references trips(id)
+- client_id text
 - title text
 - category text
 - city text
@@ -93,6 +107,7 @@ ideas
 
 idea_votes
 - idea_id bigint references ideas(id)
+- traveler_id bigint references trip_travelers(id)
 - profile_id uuid references profiles(id)
 - vote text check in ('maybe', 'like', 'love')
 - created_at timestamptz
@@ -103,7 +118,7 @@ Composite uniqueness candidates:
 
 - `trip_members(trip_id, profile_id)`
 - `trip_days(trip_id, trip_date)`
-- `idea_votes(idea_id, profile_id)`
+- `idea_votes(idea_id, traveler_id)`
 
 Indexes to include early:
 
@@ -124,8 +139,8 @@ Policy shape:
 - Trip owners can manage their trips.
 - Trip members can read trips they belong to.
 - Editors can insert/update trip days, schedule items, ideas, and votes.
-- Viewers can read but not mutate trip planning data.
 - Profiles can read member profiles for trips they belong to.
+- RLS helper functions live in a private schema so they are not exposed as public RPC endpoints.
 
 Performance notes:
 
@@ -135,19 +150,16 @@ Performance notes:
 
 ## Migration Phases
 
-1. Add Supabase client dependency and env documentation.
-2. Create a `src/lib/supabaseClient.js` module for client setup.
-3. Create a `src/lib/tripRepository.js` adapter that can return the existing trip object shape.
-4. Add migrations for profiles, trips, members, days, schedule items, ideas, and votes.
-5. Enable RLS and add membership policies.
-6. Add a one-time importer from the current `localStorage` trip shape into Supabase.
-7. Switch app load/save behavior from `localStorage` to Supabase for authenticated users.
-8. Keep `localStorage` as an offline or fallback draft only if needed.
+1. Supabase client dependency and env documentation are added.
+2. `src/lib/supabaseClient.js` handles browser-safe client setup.
+3. `src/lib/tripRepository.js` returns the existing trip object shape.
+4. Migrations exist for profiles, trips, members, travelers, days, schedule items, ideas, and votes.
+5. RLS and membership policies are enabled.
+6. Existing `localStorage` data can be imported into Supabase manually.
+7. Authenticated app load/save behavior uses Supabase.
+8. Realtime events trigger debounced active-trip refetches.
 
 ## Open Questions
 
-- Should the app require authentication immediately, or support local guest mode first?
-- Should traveler names remain free-text labels, or map to authenticated profiles?
-- Should one user own exactly one Japan 2026 trip, or should the app support multiple trips?
 - Do schedule items need conflict prevention in the database, or is UI validation enough for now?
-- Should realtime collaboration be enabled after basic CRUD works?
+- Should rollback guidance be added for failed imports?

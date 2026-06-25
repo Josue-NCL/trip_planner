@@ -17,7 +17,7 @@ Japan 2026 Travel Scheduler is a private trip-planning tool for an itinerary fro
 
 ## Current Data Shape
 
-The app currently keeps the whole planner as one trip object in React state and mirrors that object to `localStorage`.
+The app currently keeps the whole planner as one trip object in React state and syncs that object through a Supabase repository layer.
 
 Top-level fields:
 
@@ -71,11 +71,13 @@ Idea fields:
 
 - `src/App.jsx`: main application state, event handlers, views, forms, dialogs, drag/move behavior, and rendering.
 - `src/data/tripData.js`: seed trip dates, category/status/traveler constants, and initial trip factory.
-- `src/lib/storage.js`: local persistence, validation, reset, and idea merge helpers.
+- `src/lib/storage.js`: local persistence helpers retained for importing existing browser-only planner data.
+- `src/lib/tripRepository.js`: Supabase trip listing, loading, replacing, creation, and realtime subscription.
+- `src/lib/tripMappers.js`: conversion between normalized Supabase rows and the existing trip object shape.
 - `src/lib/export.js`: JSON serialization and download.
 - `src/styles.css`: all app styling and responsive behavior.
 - `public/assets/icons/`: visual tag assets used by categories and metadata.
 
-## Supabase Implication
+## Supabase Implementation
 
-The first Supabase implementation should not scatter network calls through `src/App.jsx`. Add a small data-access layer that can load/save a normalized Supabase model while still returning the existing trip shape to the UI.
+Supabase calls are isolated under `src/lib/`. `tripRepository.js` loads, creates, replaces, and subscribes to trips; `tripMappers.js` translates between normalized rows and the existing UI trip shape.

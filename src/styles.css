@@ -111,6 +111,134 @@ textarea:focus {
   padding: 14px 0 0;
 }
 
+.auth-shell,
+.trip-picker-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.auth-panel,
+.trip-picker {
+  width: min(100%, 560px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--canvas);
+  box-shadow: var(--shadow);
+}
+
+.auth-panel {
+  display: grid;
+  gap: 22px;
+  padding: 24px;
+}
+
+.auth-brand,
+.trip-picker-header {
+  display: flex;
+  align-items: center;
+}
+
+.auth-brand {
+  gap: 12px;
+}
+
+.auth-brand p,
+.auth-brand h1,
+.auth-message,
+.empty-trip-list {
+  margin: 0;
+}
+
+.auth-brand p {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.auth-brand h1 {
+  font-size: 1.35rem;
+  line-height: 1.15;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.auth-message,
+.empty-trip-list {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.trip-picker {
+  display: grid;
+  gap: 18px;
+  padding: 18px;
+}
+
+.trip-picker-header {
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.trip-picker-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.trip-list {
+  display: grid;
+  gap: 8px;
+}
+
+.trip-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 64px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  background: var(--surface);
+  text-align: left;
+}
+
+.trip-list-item:hover {
+  border-color: var(--navy);
+  background: var(--navy-soft);
+}
+
+.trip-list-item span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.trip-list-item strong,
+.trip-list-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trip-list-item small {
+  color: var(--muted);
+}
+
 .topbar {
   display: grid;
   grid-template-columns: minmax(280px, 1fr) auto minmax(420px, 1fr);
@@ -249,6 +377,42 @@ textarea:focus {
   justify-content: flex-end;
   gap: 8px;
   min-width: 0;
+}
+
+.trip-select {
+  width: min(210px, 24vw);
+  min-width: 150px;
+}
+
+.sync-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: #f7faff;
+  font-size: 0.78rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.sync-badge.is-saving,
+.sync-badge.is-loading {
+  color: var(--maybe-text);
+  background: var(--maybe);
+}
+
+.sync-badge.is-saved,
+.sync-badge.is-synced {
+  color: var(--booked-text);
+  background: var(--booked);
+}
+
+.sync-badge.is-error {
+  color: var(--hotel-text);
+  background: var(--hotel);
 }
 
 .file-input {
@@ -2286,6 +2450,10 @@ textarea:focus {
     padding-top: 8px;
   }
 
+  .trip-picker-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .planner-grid,
   .planner-grid.is-trip-view,
   .planner-grid.is-ideas-view,
@@ -2421,6 +2589,10 @@ textarea:focus {
   .view-switcher,
   .view-switcher button {
     width: 100%;
+  }
+
+  .trip-picker-actions {
+    grid-template-columns: 1fr;
   }
 
   .idea-row {
