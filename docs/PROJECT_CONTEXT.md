@@ -12,6 +12,7 @@ Japan 2026 Travel Scheduler is a private trip-planning tool for an itinerary fro
 - Add and filter ideas by status/category.
 - Promote ideas into scheduled activity blocks.
 - Track traveler sentiment with votes.
+- Invite another signed-in user to the trip and link that account to a named traveler.
 - Export and import trip data as JSON.
 - Reset local planner data back to seed state.
 
@@ -67,6 +68,15 @@ Idea fields:
 - `imageKey`
 - `votes`
 
+Supabase-only fields:
+
+- Normalized tables use database `bigint` IDs plus stable `client_id` values for travelers, days, schedule items, and ideas so the UI trip-object shape can survive full-trip replacements.
+- Planner rows include `sort_order` where ordering matters in normalized storage, including travelers, schedule items, and ideas.
+- `profiles` stores both `display_name` and `email`; the app only exposes browser-safe Supabase auth data.
+- `trip_travelers.profile_id` optionally links a named traveler, such as `Me` or `Wife`, to a Supabase Auth user.
+- `trip_invitations` stores pending invite metadata plus a hashed invite token. The raw invite token only appears in the generated invite URL.
+- `idea_votes.profile_id` is filled when the traveler is linked so future user-specific voting can be enforced without changing the UI shape.
+
 ## Important Files
 
 - `src/App.jsx`: main application state, event handlers, views, forms, dialogs, drag/move behavior, and rendering.
@@ -74,10 +84,11 @@ Idea fields:
 - `src/lib/storage.js`: local persistence helpers retained for importing existing browser-only planner data.
 - `src/lib/tripRepository.js`: Supabase trip listing, loading, replacing, creation, and realtime subscription.
 - `src/lib/tripMappers.js`: conversion between normalized Supabase rows and the existing trip object shape.
+- `src/lib/collaborationRepository.js`: invite creation, invite acceptance, member/traveler listing, and traveler claiming helpers.
 - `src/lib/export.js`: JSON serialization and download.
 - `src/styles.css`: all app styling and responsive behavior.
 - `public/assets/icons/`: visual tag assets used by categories and metadata.
 
 ## Supabase Implementation
 
-Supabase calls are isolated under `src/lib/`. `tripRepository.js` loads, creates, replaces, and subscribes to trips; `tripMappers.js` translates between normalized rows and the existing UI trip shape.
+Supabase calls are isolated under `src/lib/`. `tripRepository.js` loads, creates, replaces, and subscribes to trips; `tripMappers.js` translates between normalized rows and the existing UI trip shape; `collaborationRepository.js` handles sharing and traveler identity links.

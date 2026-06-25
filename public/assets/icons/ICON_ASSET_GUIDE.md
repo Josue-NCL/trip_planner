@@ -6,9 +6,21 @@ This folder contains small transparent PNG illustrations for the Japan 2026 trav
 
 - Format: transparent PNG
 - Size: 256x256 px
-- Visual language: soft Japanese travel illustration, navy outlines, red accents, pale-blue shadows, warm cream highlights
+- Default visual language: soft Japanese travel illustration, navy outlines, red accents, pale-blue shadows, warm cream highlights
+- Generic visual language: same navy/red/blue illustration system, but without Japan-specific motifs
 - Best display size: 18-32 px for chips/labels, 40-64 px for empty states or larger card accents
 - Intended pairing: icon + short text label, such as `Food`, `Booked`, or `Budget`
+
+## Theme Packs
+
+Two matching theme packs are available:
+
+| Theme | Filename Pattern | Use When |
+| --- | --- | --- |
+| Japan-specific | `tag-food.png`, `tag-booked.png` | The planner should feel tailored to the Japan trip |
+| Generic travel | `tag-food-generic.png`, `tag-booked-generic.png` | The planner needs a less destination-specific theme |
+
+The generic files preserve the same semantic names and suggested uses as the default files, with `-generic` added before `.png`.
 
 ## Category Icons
 
@@ -59,4 +71,5 @@ This folder contains small transparent PNG illustrations for the Japan 2026 trav
 ```
 
 - In Vite/React, public assets can be referenced with `import.meta.env.BASE_URL`, for example `${import.meta.env.BASE_URL}assets/icons/tag-food.png`.
+- Generic theme assets use the same path pattern, for example `${import.meta.env.BASE_URL}assets/icons/tag-food-generic.png`.
 - The existing app also uses lucide icons. Use these PNGs where a warmer illustrated tag style is desired, and lucide icons where controls/actions need compact symbol clarity.

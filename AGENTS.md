@@ -10,12 +10,13 @@ This file is the handoff map for future coding agents working on the Japan 2026 
 - Styling: `src/styles.css`.
 - Seed data and static options: `src/data/tripData.js`.
 - Current persistence: Supabase via `src/lib/tripRepository.js`.
+- Current collaboration helpers: Supabase via `src/lib/collaborationRepository.js`.
 - Legacy local planner import: `src/lib/storage.js` using `localStorage`.
 - Current export path: `src/lib/export.js` downloading `japan-2026-trip.json`.
 
 ## Current Backend State
 
-Supabase is the application backend. The connected project has normalized planner tables, RLS enabled, private RLS helper functions, and realtime publication entries for planner tables.
+Supabase is the application backend. The connected project has normalized planner tables, invite-based sharing, RLS enabled, private RLS helper functions, and realtime publication entries for planner tables.
 
 Always confirm schema state with `mcp__supabase.list_tables` before making further schema changes.
 
@@ -53,12 +54,14 @@ The current UI expects a single trip object with this broad shape:
   dateRangeLabel,
   travelers,
   days: [{ id, date, dayNumber, city, notes, schedule }],
-  ideas: [{ id, title, category, city, duration, status, notes, cost, link, votes }],
+  ideas: [{ id, title, category, city, duration, status, notes, cost, link, mapLink, imageKey, votes }],
   updatedAt
 }
 ```
 
-Keep compatibility with that shape. `src/lib/tripMappers.js` translates between React state and normalized rows.
+Keep compatibility with that shape. `src/lib/tripMappers.js` translates between React state and normalized rows. Normalized Supabase rows also use stable `client_id` values and `sort_order` fields where needed; `profiles` includes `email` in addition to `display_name`.
+
+Named travelers can be linked to authenticated users through `trip_travelers.profile_id`. Invite tokens are stored only as hashes in `trip_invitations`; the raw token is generated in the browser and appears only in the copied invite URL. When a traveler is linked, votes for that traveler should carry `idea_votes.profile_id`.
 
 ## Collaboration Notes
 

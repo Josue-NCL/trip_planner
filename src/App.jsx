@@ -4,6 +4,7 @@ import {
   CalendarDays,
   Check,
   Clock3,
+  Copy,
   Download,
   ExternalLink,
   FileUp,
@@ -24,10 +25,13 @@ import {
   Train,
   Trash2,
   Utensils,
+  UserPlus,
+  Users,
   X
 } from "lucide-react";
 import { CATEGORIES, makeInitialTrip, STATUSES } from "./data/tripData.js";
 import { ensureUserProfile, getCurrentSession, onAuthSessionChange, sendMagicLink, signOut } from "./lib/auth.js";
+import { acceptTripInvite, claimTripTraveler, createTripInvite, listTripCollaboration, revokeTripInvite } from "./lib/collaborationRepository.js";
 import { downloadTripExport } from "./lib/export.js";
 import { isSupabaseConfigured } from "./lib/supabaseClient.js";
 import { isValidTrip, loadTrip, mergeIdeas } from "./lib/storage.js";
@@ -122,9 +126,22 @@ const VOTE_LABELS = {
   love: "Love"
 };
 
+const IS_DEV_LOCAL_PREVIEW = import.meta.env.DEV;
+const EMPTY_COLLABORATION = {
+  members: [],
+  travelers: [],
+  invitations: []
+};
+
 function App() {
   const [trip, setTrip] = useState(loadTrip);
   const [selectedDayId, setSelectedDayId] = useState(() => trip.days[0]?.id);
+  const [isLocalPreview, setIsLocalPreview] = useState(() => {
+    if (!IS_DEV_LOCAL_PREVIEW || typeof window === "undefined") {
+      return false;
+    }
+    return new URLSearchParams(window.location.search).get("preview") === "1";
+  });
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authEmail, setAuthEmail] = useState("");
@@ -135,6 +152,13 @@ function App() {
   const [tripLoading, setTripLoading] = useState(false);
   const [tripLoaded, setTripLoaded] = useState(false);
   const [syncStatus, setSyncStatus] = useState("idle");
+  const [inviteToken, setInviteToken] = useState(() => getSearchParam("invite"));
+  const [inviteAcceptStatus, setInviteAcceptStatus] = useState("idle");
+  const [collaboration, setCollaboration] = useState(EMPTY_COLLABORATION);
+  const [collaborationStatus, setCollaborationStatus] = useState("idle");
+  const [isSharingOpen, setIsSharingOpen] = useState(false);
+  const [newInvite, setNewInvite] = useState({ email: "", travelerId: "" });
+  const [latestInviteUrl, setLatestInviteUrl] = useState("");
   const [activeView, setActiveView] = useState("trip");
   const [tripBoardMode, setTripBoardMode] = useState("calendar");
   const [dayViewMode, setDayViewMode] = useState("timeline");
@@ -154,9 +178,10 @@ function App() {
   const saveTimerRef = useRef(null);
   const realtimeTimerRef = useRef(null);
   const skipNextSaveRef = useRef(false);
+  const acceptingInviteRef = useRef("");
 
   useEffect(() => {
-    if (!isSupabaseConfigured) {
+    if (!isSupabaseConfigured || isLocalPreview) {
       setAuthLoading(false);
       return undefined;
     }
@@ -196,10 +221,10 @@ function App() {
       window.clearTimeout(saveTimerRef.current);
       window.clearTimeout(realtimeTimerRef.current);
     };
-  }, []);
+  }, [isLocalPreview]);
 
   useEffect(() => {
-    if (!session) {
+    if (!session || isLocalPreview) {
       return;
     }
 
@@ -209,7 +234,43 @@ function App() {
         setTripListStatus("error");
         showToast({ type: "error", message: error.message });
       });
-  }, [session]);
+  }, [session, isLocalPreview]);
+
+  useEffect(() => {
+    if (isLocalPreview || !session || !inviteToken || acceptingInviteRef.current === inviteToken) {
+      return;
+    }
+
+    let isCurrent = true;
+    acceptingInviteRef.current = inviteToken;
+    setInviteAcceptStatus("loading");
+    ensureUserProfile(session)
+      .then(() => acceptTripInvite(inviteToken))
+      .then(async (tripId) => {
+        if (!isCurrent) {
+          return;
+        }
+        clearSearchParam("invite");
+        setInviteToken("");
+        setInviteAcceptStatus("accepted");
+        if (tripId) {
+          await refreshTripSummaries({ silent: true });
+          setSelectedTripId(tripId);
+          setActiveView("trip");
+          showToast({ type: "success", message: "Invite accepted" });
+        }
+      })
+      .catch((error) => {
+        if (isCurrent) {
+          setInviteAcceptStatus("error");
+          showToast({ type: "error", message: error.message });
+        }
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [inviteToken, isLocalPreview, session]);
 
   const sortedDays = useMemo(() => deriveTripDays(trip.days), [trip.days]);
 
@@ -231,9 +292,24 @@ function App() {
     [trip.ideas, ideaTab, categoryFilter]
   );
   const dateRangeLabel = useMemo(() => formatTripRange(sortedDays), [sortedDays]);
+  const currentMember = useMemo(
+    () => collaboration.members.find((member) => member.profileId === session?.user?.id),
+    [collaboration.members, session?.user?.id]
+  );
+  const currentTraveler = useMemo(
+    () => collaboration.travelers.find((traveler) => traveler.profileId === session?.user?.id),
+    [collaboration.travelers, session?.user?.id]
+  );
+  const currentTravelerName = currentTraveler?.name ?? "";
+  const canManageSharing = currentMember?.role === "owner";
+  const pendingInvitations = useMemo(
+    () => collaboration.invitations.filter((invite) => invite.status === "pending"),
+    [collaboration.invitations]
+  );
 
   useEffect(() => {
-    if (!session || !selectedTripId) {
+    if (isLocalPreview || !session || !selectedTripId) {
+      setCollaboration(EMPTY_COLLABORATION);
       return;
     }
 
@@ -270,10 +346,19 @@ function App() {
     return () => {
       isCurrent = false;
     };
-  }, [selectedTripId, session]);
+  }, [selectedTripId, session, isLocalPreview]);
 
   useEffect(() => {
-    if (!session || !selectedTripId || !tripLoaded) {
+    if (isLocalPreview || !session || !selectedTripId || !tripLoaded) {
+      setCollaboration(EMPTY_COLLABORATION);
+      return;
+    }
+
+    refreshCollaboration({ silent: true });
+  }, [selectedTripId, session, tripLoaded, isLocalPreview]);
+
+  useEffect(() => {
+    if (isLocalPreview || !session || !selectedTripId || !tripLoaded) {
       return undefined;
     }
 
@@ -300,10 +385,10 @@ function App() {
     return () => {
       window.clearTimeout(saveTimerRef.current);
     };
-  }, [trip, dateRangeLabel, selectedTripId, session, tripLoaded]);
+  }, [trip, dateRangeLabel, selectedTripId, session, tripLoaded, isLocalPreview]);
 
   useEffect(() => {
-    if (!session || !selectedTripId || !tripLoaded) {
+    if (isLocalPreview || !session || !selectedTripId || !tripLoaded) {
       return undefined;
     }
 
@@ -315,6 +400,7 @@ function App() {
             skipNextSaveRef.current = true;
             setTrip(remoteTrip);
             setSyncStatus("synced");
+            refreshCollaboration({ silent: true });
           })
           .catch((error) => {
             setSyncStatus("error");
@@ -322,7 +408,7 @@ function App() {
           });
       }, 1000);
     });
-  }, [selectedTripId, session, tripLoaded]);
+  }, [selectedTripId, session, tripLoaded, isLocalPreview]);
 
   async function refreshTripSummaries({ silent = false } = {}) {
     if (!silent) {
@@ -331,6 +417,85 @@ function App() {
     const summaries = await listTrips(session?.user?.id);
     setTripSummaries(summaries);
     setTripListStatus("ready");
+  }
+
+  async function refreshCollaboration({ silent = false } = {}) {
+    if (!selectedTripId || isLocalPreview) {
+      setCollaboration(EMPTY_COLLABORATION);
+      return;
+    }
+
+    if (!silent) {
+      setCollaborationStatus("loading");
+    }
+
+    try {
+      const nextCollaboration = await listTripCollaboration(selectedTripId);
+      setCollaboration(nextCollaboration);
+      setCollaborationStatus("ready");
+      setNewInvite((current) => ({
+        ...current,
+        travelerId: current.travelerId || String(findFirstAvailableTraveler(nextCollaboration.travelers)?.id ?? "")
+      }));
+    } catch (error) {
+      setCollaborationStatus("error");
+      showToast({ type: "error", message: error.message });
+    }
+  }
+
+  async function handleCreateInvite(event) {
+    event.preventDefault();
+    if (!selectedTripId || !session?.user || !newInvite.email.trim() || !newInvite.travelerId) {
+      return;
+    }
+
+    try {
+      const invite = await createTripInvite({
+        tripId: selectedTripId,
+        email: newInvite.email,
+        travelerId: Number(newInvite.travelerId),
+        invitedBy: session.user.id
+      });
+      setLatestInviteUrl(invite.inviteUrl);
+      setNewInvite({ email: "", travelerId: newInvite.travelerId });
+      await refreshCollaboration({ silent: true });
+      showToast({ type: "success", message: "Invite created" });
+    } catch (error) {
+      showToast({ type: "error", message: error.message });
+    }
+  }
+
+  async function handleRevokeInvite(inviteId) {
+    try {
+      await revokeTripInvite(inviteId);
+      await refreshCollaboration({ silent: true });
+      showToast({ type: "success", message: "Invite revoked" });
+    } catch (error) {
+      showToast({ type: "error", message: error.message });
+    }
+  }
+
+  async function handleClaimTraveler(travelerId) {
+    try {
+      await claimTripTraveler(travelerId);
+      await refreshCollaboration({ silent: true });
+      showToast({ type: "success", message: "Traveler linked" });
+    } catch (error) {
+      showToast({ type: "error", message: error.message });
+    }
+  }
+
+  async function copyLatestInvite() {
+    if (!latestInviteUrl) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(latestInviteUrl);
+      showToast({ type: "success", message: "Invite link copied" });
+    } catch {
+      showToast({ type: "info", message: "Copy the invite link manually" });
+    }
   }
 
   async function handleMagicLinkSubmit(event) {
@@ -358,6 +523,21 @@ function App() {
     } catch (error) {
       showToast({ type: "error", message: error.message });
     }
+  }
+
+  function startLocalPreview() {
+    setIsLocalPreview(true);
+    setAuthLoading(false);
+    setSession(null);
+    setSelectedTripId(null);
+    setTripLoaded(false);
+    setSyncStatus("preview");
+    showToast({ type: "info", message: "Local preview mode" });
+  }
+
+  function stopLocalPreview() {
+    setIsLocalPreview(false);
+    setSyncStatus("idle");
   }
 
   async function createTrip(payload) {
@@ -683,6 +863,10 @@ function App() {
   }
 
   function cycleVote(ideaId, traveler) {
+    if (!isLocalPreview && selectedTripId && (!currentTravelerName || traveler !== currentTravelerName)) {
+      return;
+    }
+
     setTrip((current) => ({
       ...current,
       ideas: current.ideas.map((idea) => {
@@ -786,26 +970,33 @@ function App() {
     showToast({ type: "success", message: "Planner reset" });
   }
 
-  if (!isSupabaseConfigured) {
+  if (!isSupabaseConfigured && !isLocalPreview) {
     return <ConfigState title="Supabase needs environment variables" message="Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then restart the Vite dev server." />;
   }
 
-  if (authLoading) {
+  if (!isLocalPreview && authLoading) {
     return <ConfigState title="Checking session" message="Restoring your Supabase session..." />;
   }
 
-  if (!session) {
+  if (!isLocalPreview && !session) {
     return (
       <AuthScreen
         email={authEmail}
         message={authMessage}
+        hasInvite={Boolean(inviteToken)}
         onEmailChange={setAuthEmail}
         onSubmit={handleMagicLinkSubmit}
+        canPreview={IS_DEV_LOCAL_PREVIEW}
+        onPreview={startLocalPreview}
       />
     );
   }
 
-  if (!selectedTripId) {
+  if (!isLocalPreview && session && inviteToken && inviteAcceptStatus === "loading") {
+    return <ConfigState title="Accepting invite" message="Linking this trip to your account..." />;
+  }
+
+  if (!isLocalPreview && !selectedTripId) {
     return (
       <TripPicker
         email={session.user.email}
@@ -822,7 +1013,7 @@ function App() {
     );
   }
 
-  if (tripLoading && !tripLoaded) {
+  if (!isLocalPreview && tripLoading && !tripLoaded) {
     return <ConfigState title="Loading trip" message="Pulling the latest planner from Supabase..." />;
   }
 
@@ -845,14 +1036,22 @@ function App() {
         <ViewSwitcher activeView={activeView} ideasCount={trip.ideas.length} onChange={setActiveView} />
 
         <div className="topbar-actions">
-          <select className="trip-select" value={selectedTripId ?? ""} onChange={(event) => setSelectedTripId(Number(event.target.value))} aria-label="Switch trip">
-            {tripSummaries.map((summary) => (
-              <option key={summary.id} value={summary.id}>
-                {summary.name}
-              </option>
-            ))}
-          </select>
-          <span className={`sync-badge is-${syncStatus}`}>{formatSyncStatus(syncStatus)}</span>
+          {!isLocalPreview ? (
+            <select className="trip-select" value={selectedTripId ?? ""} onChange={(event) => setSelectedTripId(Number(event.target.value))} aria-label="Switch trip">
+              {tripSummaries.map((summary) => (
+                <option key={summary.id} value={summary.id}>
+                  {summary.name}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          <span className={`sync-badge is-${isLocalPreview ? "preview" : syncStatus}`}>{isLocalPreview ? "Local preview" : formatSyncStatus(syncStatus)}</span>
+          {!isLocalPreview && selectedTripId ? (
+            <button className="ghost-button" type="button" onClick={() => setIsSharingOpen(true)}>
+              <Users size={17} />
+              Share
+            </button>
+          ) : null}
           <button className="ghost-button" type="button" onClick={exportTrip}>
             <Download size={17} />
             Export
@@ -865,7 +1064,7 @@ function App() {
           <button className="icon-button" type="button" aria-label="Reset planner" onClick={resetPlanner}>
             <RefreshCcw size={18} />
           </button>
-          <button className="icon-button" type="button" aria-label="Sign out" onClick={handleSignOut}>
+          <button className="icon-button" type="button" aria-label={isLocalPreview ? "Back to sign in" : "Sign out"} onClick={isLocalPreview ? stopLocalPreview : handleSignOut}>
             <LogOut size={18} />
           </button>
         </div>
@@ -929,6 +1128,8 @@ function App() {
             ideas={filteredIdeas}
             allIdeas={trip.ideas}
             travelers={trip.travelers}
+            currentTravelerName={currentTravelerName}
+            canVoteAllTravelers={isLocalPreview || !selectedTripId}
             ideaTab={ideaTab}
             categoryFilter={categoryFilter}
             newIdea={newIdea}
@@ -1006,33 +1207,123 @@ function App() {
           </div>
         </div>
       ) : null}
+
+      {isSharingOpen ? (
+        <SharingModal
+          collaboration={collaboration}
+          currentUserId={session?.user?.id}
+          canManage={canManageSharing}
+          status={collaborationStatus}
+          newInvite={newInvite}
+          latestInviteUrl={latestInviteUrl}
+          pendingInvitations={pendingInvitations}
+          onNewInviteChange={setNewInvite}
+          onSubmitInvite={handleCreateInvite}
+          onCopyInvite={copyLatestInvite}
+          onRevokeInvite={handleRevokeInvite}
+          onClaimTraveler={handleClaimTraveler}
+          onRefresh={() => refreshCollaboration()}
+          onClose={() => setIsSharingOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
 
-function AuthScreen({ email, message, onEmailChange, onSubmit }) {
+function AuthScreen({ email, message, hasInvite, canPreview, onEmailChange, onSubmit, onPreview }) {
   return (
-    <main className="auth-shell">
-      <section className="auth-panel" aria-labelledby="auth-title">
-        <div className="auth-brand">
+    <main className="auth-shell auth-landing-shell">
+      <section className="auth-landing" aria-labelledby="auth-title">
+        <div className="auth-landing-brand">
           <img className="title-flag" src="./assets/japan-flag-title.png" alt="" aria-hidden="true" />
-          <div>
-            <p>Japan 2026</p>
-            <h1 id="auth-title">Sign in to sync your planner</h1>
+          <strong>Japan 2026</strong>
+        </div>
+
+        <div className="auth-hero">
+          <div className="auth-hero-copy">
+            <h1 id="auth-title">Plan the trip together</h1>
+            <p>Sync plans, ideas, bookings, and day-by-day details for Japan 2026.</p>
+          </div>
+
+          <div className="auth-preview-card" aria-hidden="true">
+            <div className="auth-preview-top">
+              <span>
+                <img src="./assets/japan-flag-title.png" alt="" />
+                Japan 2026
+              </span>
+              <strong>Synced</strong>
+            </div>
+            <div className="auth-preview-days">
+              {[
+                ["Sep 25", "Tokyo", "tag-food.png"],
+                ["Sep 26", "Kyoto", "tag-culture.png"],
+                ["Sep 27", "Osaka", "tag-transit.png"],
+                ["Sep 28", "Hakone", "tag-hotel.png"]
+              ].map(([date, city, icon]) => (
+                <span className="auth-preview-day" key={date}>
+                  <small>{date}</small>
+                  <strong>{city}</strong>
+                  <img src={`./assets/icons/${icon}`} alt="" />
+                </span>
+              ))}
+              <span className="auth-preview-add">+</span>
+            </div>
+            <div className="auth-preview-tags">
+              {["tag-food.png", "tag-culture.png", "tag-transit.png", "tag-hotel.png", "tag-shopping.png", "tag-open-time.png", "tag-map-pin.png"].map((icon) => (
+                <span key={icon}>
+                  <img src={`./assets/icons/${icon}`} alt="" />
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="auth-benefits" aria-label="Planner benefits">
+            <span>
+              <img src="./assets/icons/tag-favorite.png" alt="" aria-hidden="true" />
+              <strong>Plan together</strong>
+              <small>Share ideas and votes.</small>
+            </span>
+            <span>
+              <img src="./assets/icons/tag-flexible.png" alt="" aria-hidden="true" />
+              <strong>Always in sync</strong>
+              <small>Changes follow the trip.</small>
+            </span>
+            <span>
+              <img src="./assets/icons/tag-booked.png" alt="" aria-hidden="true" />
+              <strong>Private & secure</strong>
+              <small>Your planner stays yours.</small>
+            </span>
           </div>
         </div>
-        <form className="auth-form" onSubmit={onSubmit}>
-          <label>
-            Email
-            <input type="email" value={email} onChange={(event) => onEmailChange(event.target.value)} placeholder="you@example.com" required />
-          </label>
-          <button className="primary-button" type="submit">
-            <Mail size={17} />
-            Send magic link
-          </button>
-        </form>
-        {message ? <p className="auth-message">{message}</p> : null}
+
+        <aside className="auth-card" aria-label="Sign in">
+          <div className="auth-card-header">
+            <h2>Sign in</h2>
+            <p>Use your email to open the shared planner.</p>
+            {hasInvite ? <span className="invite-auth-note">Invite link ready</span> : null}
+          </div>
+          <form className="auth-form" onSubmit={onSubmit}>
+            <label>
+              Email
+              <input type="email" value={email} onChange={(event) => onEmailChange(event.target.value)} placeholder="you@example.com" required />
+            </label>
+            <button className="primary-button" type="submit">
+              <Mail size={17} />
+              Send magic link
+            </button>
+          </form>
+          {canPreview ? (
+            <>
+              <div className="auth-divider"><span>or</span></div>
+              <button className="ghost-button full-width" type="button" onClick={onPreview}>
+                Open local preview
+              </button>
+            </>
+          ) : null}
+          {message ? <p className="auth-message">{message}</p> : null}
+        </aside>
       </section>
+      <img className="auth-footer-strip" src="./assets/japan-footer-strip.png" alt="" aria-hidden="true" />
     </main>
   );
 }
@@ -1688,6 +1979,7 @@ function AllTripBoard({ days, mode, dateRangeLabel, ideasCount, onModeChange, on
 
 function TripCalendarBoard({ days, onOpenDay, onScheduleMove, onEditSchedule }) {
   const slots = buildTimeGridSlots();
+  const [timelineScrollLeft, setTimelineScrollLeft] = useState(0);
   const dragScheduler = useScheduleDrag({ days, onScheduleMove, rowHeight: TRIP_TIME_GRID_ROW_HEIGHT });
   const gridStyle = {
     "--day-count": days.length,
@@ -1697,51 +1989,58 @@ function TripCalendarBoard({ days, onOpenDay, onScheduleMove, onEditSchedule }) 
 
   return (
     <div
-      className="trip-time-grid-wrap"
+      className="trip-time-grid-shell"
       aria-label="Trip schedule time grid"
       onPointerMove={dragScheduler.handlePointerMove}
       onPointerUp={dragScheduler.handlePointerUp}
       onPointerCancel={dragScheduler.handlePointerCancel}
     >
-      <div className="trip-time-grid" style={gridStyle}>
+      <div className="trip-time-sticky-header" style={gridStyle}>
         <div className="trip-time-corner">Time</div>
-        {days.map((day, index) => (
-          <button
-            className={`trip-time-day-header trip-day-theme-${((day.dayNumber - 1) % 6) + 1}`}
-            type="button"
-            style={{ gridColumn: index + 2 }}
-            key={day.id}
-            onClick={() => onOpenDay(day.id)}
-          >
-            <strong>
-              {day.label || `Day ${day.dayNumber}`} - {formatWeekday(day.date)}
-            </strong>
-            <span>{formatShortDate(day.date)}</span>
-            <small>
-              <MapPin size={12} />
-              {day.city}
-            </small>
-          </button>
-        ))}
-        <div className="trip-time-labels">
-          {slots.map((slot) => (
-            <div className={`trip-time-label ${slot.minutes % 60 === 0 ? "is-hour" : ""}`} key={slot.minutes}>
-              {formatMinutesTime(slot.minutes)}
-            </div>
+        <div className="trip-time-header-scroll">
+          <div className="trip-time-header-days" style={{ transform: `translateX(-${timelineScrollLeft}px)` }}>
+            {days.map((day) => (
+              <button
+                className={`trip-time-day-header trip-day-theme-${((day.dayNumber - 1) % 6) + 1}`}
+                type="button"
+                key={day.id}
+                onClick={() => onOpenDay(day.id)}
+              >
+                <strong>
+                  {day.label || `Day ${day.dayNumber}`} - {formatWeekday(day.date)}
+                </strong>
+                <span>{formatShortDate(day.date)}</span>
+                <small>
+                  <MapPin size={12} />
+                  {day.city}
+                </small>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="trip-time-grid-wrap" onScroll={(event) => setTimelineScrollLeft(event.currentTarget.scrollLeft)}>
+        <div className="trip-time-grid trip-time-body-grid" style={gridStyle}>
+          <div className="trip-time-labels">
+            {slots.map((slot) => (
+              <div className={`trip-time-label ${slot.minutes % 60 === 0 ? "is-hour" : ""}`} key={slot.minutes}>
+                {formatMinutesTime(slot.minutes)}
+              </div>
+            ))}
+          </div>
+          {days.map((day, index) => (
+            <TripTimeDayColumn
+              day={day}
+              key={day.id}
+              columnIndex={index + 2}
+              draggedItemId={dragScheduler.draggedItemId}
+              dropPreview={dragScheduler.getDropPreviewForDay(day.id)}
+              onPointerDown={dragScheduler.handlePointerDown}
+              onEditSchedule={onEditSchedule}
+              shouldSuppressClick={dragScheduler.shouldSuppressClick}
+            />
           ))}
         </div>
-        {days.map((day, index) => (
-          <TripTimeDayColumn
-            day={day}
-            key={day.id}
-            columnIndex={index + 2}
-            draggedItemId={dragScheduler.draggedItemId}
-            dropPreview={dragScheduler.getDropPreviewForDay(day.id)}
-            onPointerDown={dragScheduler.handlePointerDown}
-            onEditSchedule={onEditSchedule}
-            shouldSuppressClick={dragScheduler.shouldSuppressClick}
-          />
-        ))}
       </div>
     </div>
   );
@@ -1805,6 +2104,8 @@ function IdeasSection({
   ideas,
   allIdeas,
   travelers,
+  currentTravelerName,
+  canVoteAllTravelers,
   ideaTab,
   categoryFilter,
   newIdea,
@@ -1893,6 +2194,8 @@ function IdeasSection({
                 idea={idea}
                 key={idea.id}
                 travelers={travelers}
+                currentTravelerName={currentTravelerName}
+                canVoteAllTravelers={canVoteAllTravelers}
                 onEdit={() => onEditIdea(idea)}
                 onDelete={() => onDeleteIdea(idea.id)}
                 onVote={(traveler) => onVote(idea.id, traveler)}
@@ -1923,7 +2226,7 @@ function IdeaFilters({ activeCategory, onChange }) {
   );
 }
 
-function IdeaRow({ idea, travelers, onEdit, onDelete, onVote, onPromote }) {
+function IdeaRow({ idea, travelers, currentTravelerName, canVoteAllTravelers, onEdit, onDelete, onVote, onPromote }) {
   const config = getCategoryConfig(idea.category);
 
   return (
@@ -1944,8 +2247,16 @@ function IdeaRow({ idea, travelers, onEdit, onDelete, onVote, onPromote }) {
       <div className="idea-votes" aria-label={`${idea.title} traveler votes`}>
         {travelers.map((traveler) => {
           const vote = idea.votes?.[traveler] ?? "";
+          const isLinkedTraveler = canVoteAllTravelers || currentTravelerName === traveler;
           return (
-            <button className={`vote-icon vote-${vote || "none"}`} type="button" key={traveler} onClick={() => onVote(traveler)} title={`${traveler}: ${VOTE_LABELS[vote]}`}>
+            <button
+              className={`vote-icon vote-${vote || "none"}`}
+              type="button"
+              key={traveler}
+              disabled={!isLinkedTraveler}
+              onClick={() => onVote(traveler)}
+              title={isLinkedTraveler ? `${traveler}: ${VOTE_LABELS[vote]}` : `${traveler} is linked to another traveler`}
+            >
               <span>{traveler.slice(0, 1)}</span>
               <Heart size={19} fill={vote === "love" ? "currentColor" : "none"} />
             </button>
@@ -1957,6 +2268,153 @@ function IdeaRow({ idea, travelers, onEdit, onDelete, onVote, onPromote }) {
         Add as Activity
       </button>
     </article>
+  );
+}
+
+function SharingModal({
+  collaboration,
+  currentUserId,
+  canManage,
+  status,
+  newInvite,
+  latestInviteUrl,
+  pendingInvitations,
+  onNewInviteChange,
+  onSubmitInvite,
+  onCopyInvite,
+  onRevokeInvite,
+  onClaimTraveler,
+  onRefresh,
+  onClose
+}) {
+  const availableInviteTravelers = collaboration.travelers.filter((traveler) => !traveler.profileId);
+  const inviteTravelerOptions = availableInviteTravelers.length ? availableInviteTravelers : collaboration.travelers;
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <div className="dialog sharing-dialog" role="dialog" aria-modal="true" aria-label="Trip sharing">
+        <DialogHeader title="Trip sharing" onClose={onClose} />
+
+        <div className="sharing-grid">
+          <section className="sharing-section">
+            <div className="sharing-section-title">
+              <strong>Members</strong>
+              <button className="icon-button flat" type="button" aria-label="Refresh members" onClick={onRefresh}>
+                <RefreshCcw size={16} />
+              </button>
+            </div>
+            <div className="sharing-list">
+              {collaboration.members.map((member) => (
+                <div className="sharing-row" key={member.profileId}>
+                  <span>
+                    <strong>{member.displayName}</strong>
+                    <small>{member.email || "No email"}</small>
+                  </span>
+                  <span className={`role-pill role-${member.role}`}>{member.role}</span>
+                </div>
+              ))}
+              {!collaboration.members.length ? <p className="empty-trip-list">No members loaded yet.</p> : null}
+            </div>
+          </section>
+
+          <section className="sharing-section">
+            <div className="sharing-section-title">
+              <strong>Travelers</strong>
+            </div>
+            <div className="sharing-list">
+              {collaboration.travelers.map((traveler) => {
+                const isCurrentUser = traveler.profileId === currentUserId;
+                const canClaim = !traveler.profileId || isCurrentUser;
+                return (
+                  <div className="sharing-row" key={traveler.id}>
+                    <span>
+                      <strong>{traveler.name}</strong>
+                      <small>{traveler.email || (traveler.profileId ? traveler.displayName : "Not linked")}</small>
+                    </span>
+                    {isCurrentUser ? (
+                      <span className="role-pill role-owner">You</span>
+                    ) : (
+                      <button className="ghost-button compact-action" type="button" disabled={!canClaim} onClick={() => onClaimTraveler(traveler.id)}>
+                        {traveler.profileId ? "Linked" : "Claim me"}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        </div>
+
+        {canManage ? (
+          <section className="sharing-section invite-panel">
+            <div className="sharing-section-title">
+              <strong>Invite editor</strong>
+            </div>
+            <form className="invite-form" onSubmit={onSubmitInvite}>
+              <label className="editor-field">
+                Email
+                <input
+                  type="email"
+                  value={newInvite.email}
+                  placeholder="wife@example.com"
+                  onChange={(event) => onNewInviteChange((current) => ({ ...current, email: event.target.value }))}
+                  required
+                />
+              </label>
+              <label className="editor-field">
+                Traveler
+                <select
+                  value={newInvite.travelerId}
+                  onChange={(event) => onNewInviteChange((current) => ({ ...current, travelerId: event.target.value }))}
+                  required
+                >
+                  <option value="">Choose traveler</option>
+                  {inviteTravelerOptions.map((traveler) => (
+                    <option value={traveler.id} key={traveler.id}>
+                      {traveler.name}{traveler.profileId ? " (linked)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button className="primary-button" type="submit" disabled={!newInvite.email.trim() || !newInvite.travelerId}>
+                <UserPlus size={17} />
+                Create invite
+              </button>
+            </form>
+
+            {latestInviteUrl ? (
+              <div className="invite-link-box">
+                <label className="editor-field">
+                  Invite link
+                  <input value={latestInviteUrl} readOnly onFocus={(event) => event.target.select()} />
+                </label>
+                <button className="ghost-button" type="button" onClick={onCopyInvite}>
+                  <Copy size={17} />
+                  Copy
+                </button>
+              </div>
+            ) : null}
+
+            <div className="sharing-list">
+              {pendingInvitations.map((invite) => (
+                <div className="sharing-row" key={invite.id}>
+                  <span>
+                    <strong>{invite.email}</strong>
+                    <small>{getTravelerName(collaboration.travelers, invite.travelerId)} • expires {formatShortDate(invite.expiresAt)}</small>
+                  </span>
+                  <button className="ghost-button compact-action" type="button" onClick={() => onRevokeInvite(invite.id)}>
+                    Revoke
+                  </button>
+                </div>
+              ))}
+              {!pendingInvitations.length ? <p className="empty-trip-list">No pending invites.</p> : null}
+            </div>
+          </section>
+        ) : (
+          <p className="dialog-note">{status === "loading" ? "Loading sharing details..." : "Only the trip owner can invite editors."}</p>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -2557,8 +3015,34 @@ function countStatus(ideas, status) {
   return ideas.filter((idea) => idea.status === status).length;
 }
 
+function findFirstAvailableTraveler(travelers) {
+  return travelers.find((traveler) => !traveler.profileId) ?? travelers[0];
+}
+
+function getTravelerName(travelers, travelerId) {
+  return travelers.find((traveler) => String(traveler.id) === String(travelerId))?.name ?? "Traveler";
+}
+
+function getSearchParam(name) {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  return new URLSearchParams(window.location.search).get(name) ?? "";
+}
+
+function clearSearchParam(name) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.delete(name);
+  window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 function formatShortDate(dateValue) {
-  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date(`${dateValue}T12:00:00`));
+  const value = String(dateValue ?? "");
+  const date = value.includes("T") ? new Date(value) : new Date(`${value}T12:00:00`);
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(date);
 }
 
 function formatWeekday(dateValue) {

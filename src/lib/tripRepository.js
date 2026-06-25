@@ -1,7 +1,7 @@
 import { requireSupabase, supabase } from "./supabaseClient.js";
 import { buildTripRows, mapRowsToTrip, travelerClientId } from "./tripMappers.js";
 
-const REALTIME_TABLES = ["trips", "trip_members", "trip_travelers", "trip_days", "schedule_items", "ideas", "idea_votes"];
+const REALTIME_TABLES = ["trips", "trip_members", "trip_travelers", "trip_days", "schedule_items", "ideas", "idea_votes", "trip_invitations"];
 
 export async function listTrips(profileId) {
   const client = requireSupabase();
@@ -114,9 +114,19 @@ export async function replaceTripPayload(tripId, payload) {
   throwIfError(daysReadError);
   const { data: existingIdeas, error: ideasReadError } = await client.from("ideas").select("id").eq("trip_id", tripId);
   throwIfError(ideasReadError);
+  const { data: existingTravelers, error: travelersReadError } = await client
+    .from("trip_travelers")
+    .select("id, client_id, profile_id")
+    .eq("trip_id", tripId);
+  throwIfError(travelersReadError);
 
   const dayIds = (existingDays ?? []).map((day) => day.id);
   const ideaIds = (existingIdeas ?? []).map((idea) => idea.id);
+  const existingTravelerByClientId = new Map((existingTravelers ?? []).map((traveler) => [traveler.client_id, traveler]));
+  const activeTravelerClientIds = new Set(rows.travelers.map((traveler) => traveler.client_id));
+  const removableTravelerIds = (existingTravelers ?? [])
+    .filter((traveler) => !activeTravelerClientIds.has(traveler.client_id) && !traveler.profile_id)
+    .map((traveler) => traveler.id);
 
   if (ideaIds.length) {
     throwIfError((await client.from("idea_votes").delete().in("idea_id", ideaIds)).error);
@@ -126,10 +136,19 @@ export async function replaceTripPayload(tripId, payload) {
   }
 
   throwIfError((await client.from("ideas").delete().eq("trip_id", tripId)).error);
-  throwIfError((await client.from("trip_travelers").delete().eq("trip_id", tripId)).error);
   throwIfError((await client.from("trip_days").delete().eq("trip_id", tripId)).error);
+  if (removableTravelerIds.length) {
+    throwIfError((await client.from("trip_travelers").delete().in("id", removableTravelerIds)).error);
+  }
 
-  const travelerRows = await insertRows("trip_travelers", rows.travelers);
+  const travelerRows = await upsertRows(
+    "trip_travelers",
+    rows.travelers.map((traveler) => ({
+      ...traveler,
+      profile_id: existingTravelerByClientId.get(traveler.client_id)?.profile_id ?? null
+    })),
+    "trip_id,client_id"
+  );
   const dayRows = await insertRows("trip_days", rows.days);
 
   const dayIdByClientId = new Map(dayRows.map((day) => [day.client_id, day.id]));
@@ -148,6 +167,8 @@ export async function replaceTripPayload(tripId, payload) {
 
   const travelerIdByName = new Map(travelerRows.map((traveler) => [traveler.name, traveler.id]));
   const travelerIdByClientId = new Map(travelerRows.map((traveler) => [traveler.client_id, traveler.id]));
+  const travelerProfileByName = new Map(travelerRows.map((traveler) => [traveler.name, traveler.profile_id]));
+  const travelerProfileByClientId = new Map(travelerRows.map((traveler) => [traveler.client_id, traveler.profile_id]));
   const ideaIdByClientId = new Map(ideaRows.map((idea) => [idea.client_id, idea.id]));
   const voteRows = rows.ideas.flatMap((idea) => {
     const ideaId = ideaIdByClientId.get(idea.client_id);
@@ -160,6 +181,7 @@ export async function replaceTripPayload(tripId, payload) {
       .map(([travelerName, vote]) => ({
         idea_id: ideaId,
         traveler_id: travelerIdByName.get(travelerName) ?? travelerIdByClientId.get(travelerClientId(travelerName)),
+        profile_id: travelerProfileByName.get(travelerName) ?? travelerProfileByClientId.get(travelerClientId(travelerName)) ?? null,
         vote
       }))
       .filter((vote) => vote.traveler_id);
@@ -191,6 +213,20 @@ async function insertRows(table, rows) {
 
   const client = requireSupabase();
   const { data, error } = await client.from(table).insert(rows).select("*");
+  if (error) {
+    throw error;
+  }
+
+  return data ?? [];
+}
+
+async function upsertRows(table, rows, onConflict) {
+  if (!rows.length) {
+    return [];
+  }
+
+  const client = requireSupabase();
+  const { data, error } = await client.from(table).upsert(rows, { onConflict }).select("*");
   if (error) {
     throw error;
   }

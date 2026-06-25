@@ -4,7 +4,7 @@
 
 - Supabase MCP is reachable.
 - The connected project has planner tables in `public`.
-- The app uses Supabase Auth, normalized tables, and realtime refetching.
+- The app uses Supabase Auth, normalized tables, invite-based sharing, and realtime refetching.
 - `localStorage` is now only used as an import source for existing browser-only planner data.
 - JSON export/import remains available as a backup and migration path.
 
@@ -31,6 +31,7 @@ Use lowercase `snake_case`, `bigint generated always as identity` primary keys, 
 profiles
 - id uuid primary key references auth.users(id)
 - display_name text
+- email text
 - created_at timestamptz
 - updated_at timestamptz
 
@@ -48,6 +49,7 @@ trip_members
 - profile_id uuid references profiles(id)
 - role text check in ('owner', 'editor')
 - created_at timestamptz
+- updated_at timestamptz
 
 trip_travelers
 - id bigint primary key
@@ -102,6 +104,7 @@ ideas
 - link text
 - map_link text
 - image_key text
+- sort_order integer
 - created_at timestamptz
 - updated_at timestamptz
 
@@ -112,23 +115,49 @@ idea_votes
 - vote text check in ('maybe', 'like', 'love')
 - created_at timestamptz
 - updated_at timestamptz
+
+trip_invitations
+- id bigint primary key
+- trip_id bigint references trips(id)
+- email text
+- role text check in ('editor')
+- traveler_id bigint references trip_travelers(id)
+- token_hash text unique
+- status text check in ('pending', 'accepted', 'revoked', 'expired')
+- invited_by uuid references profiles(id)
+- accepted_by uuid references profiles(id)
+- accepted_at timestamptz
+- expires_at timestamptz
+- created_at timestamptz
+- updated_at timestamptz
 ```
 
 Composite uniqueness candidates:
 
 - `trip_members(trip_id, profile_id)`
 - `trip_days(trip_id, trip_date)`
+- `trip_travelers(trip_id, client_id)`
+- `trip_days(trip_id, client_id)`
+- `ideas(trip_id, client_id)`
 - `idea_votes(idea_id, traveler_id)`
+- `trip_invitations(token_hash)`
 
 Indexes to include early:
 
 - `trips(owner_id)`
 - `trip_members(profile_id)`
 - `trip_members(trip_id)`
+- `trip_travelers(trip_id)`
+- `trip_travelers(profile_id)`
 - `trip_days(trip_id, trip_date)`
 - `schedule_items(trip_day_id, start_time)`
+- `schedule_items(trip_day_id, client_id)`
 - `ideas(trip_id, status)`
+- `idea_votes(traveler_id)`
 - `idea_votes(profile_id)`
+- `trip_invitations(trip_id)`
+- `trip_invitations(email, status)`
+- `trip_invitations(traveler_id)`
 
 ## RLS Direction
 
@@ -139,6 +168,9 @@ Policy shape:
 - Trip owners can manage their trips.
 - Trip members can read trips they belong to.
 - Editors can insert/update trip days, schedule items, ideas, and votes.
+- Trip owners can create and revoke pending trip invitations.
+- Invite links are accepted through authenticated RPCs; anonymous execution is revoked.
+- Named travelers can be linked to Supabase profiles, and linked votes carry `profile_id`.
 - Profiles can read member profiles for trips they belong to.
 - RLS helper functions live in a private schema so they are not exposed as public RPC endpoints.
 
@@ -158,6 +190,8 @@ Performance notes:
 6. Existing `localStorage` data can be imported into Supabase manually.
 7. Authenticated app load/save behavior uses Supabase.
 8. Realtime events trigger debounced active-trip refetches.
+9. Trip invitations let the owner invite another editor and link that user to a traveler.
+10. Traveler claiming lets an existing trip member bind their profile to an unlinked named traveler.
 
 ## Open Questions
 

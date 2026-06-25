@@ -36,6 +36,7 @@ The Supabase schema is tracked in `supabase/migrations/` and has been applied to
 
 - Sign-in uses Supabase magic links.
 - After sign-in, users choose from multiple trips or create/import one.
+- Trip owners can invite another editor and link that account to a named traveler for voting.
 - The React UI still uses the existing trip object shape.
 - The repository layer maps that shape to normalized Supabase rows.
 - Realtime database events trigger a debounced active-trip refetch.

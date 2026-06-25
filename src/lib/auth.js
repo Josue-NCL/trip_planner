@@ -24,7 +24,7 @@ export function onAuthSessionChange(callback) {
 
 export async function sendMagicLink(email) {
   const client = requireSupabase();
-  const redirectTo = `${window.location.origin}${window.location.pathname}`;
+  const redirectTo = `${window.location.origin}${window.location.pathname}${window.location.search}`;
   const { error } = await client.auth.signInWithOtp({
     email,
     options: {
