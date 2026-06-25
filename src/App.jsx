@@ -30,7 +30,7 @@ import { isValidTrip, loadTrip, mergeIdeas, resetTripStorage, saveTrip } from ".
 
 const DAY_MINUTES = 12 * 60;
 const FILTER_TABS = ["Ideas", "All", "Booked", "Maybe"];
-const CATEGORY_FILTERS = ["All", "Food", "Culture", "Transit", "Hotel", "Open Time"];
+const CATEGORY_FILTERS = ["All", "Food", "Culture", "Transit", "Hotel", "Shopping", "Open Time"];
 const TIME_GRID_START_MINUTES = 7 * 60;
 const TIME_GRID_END_MINUTES = 22 * 60;
 const TIME_GRID_STEP_MINUTES = 30;
@@ -66,7 +66,7 @@ const CATEGORY_CONFIG = {
   Food: { icon: Utensils, asset: TAG_ASSETS.category.Food, className: "food", label: "Food", short: "Food" },
   Culture: { icon: Landmark, asset: TAG_ASSETS.category.Culture, className: "culture", label: "Culture", short: "See" },
   Transit: { icon: Train, asset: TAG_ASSETS.category.Transit, className: "transit", label: "Transit", short: "Go" },
-  Hotel: { icon: Bed, asset: TAG_ASSETS.category.Hotel, className: "hotel", label: "Hotel", short: "Stay" },
+  Hotel: { icon: Bed, asset: TAG_ASSETS.category.Hotel, className: "hotel", label: "Hotel", short: "Hotel" },
   Shopping: { icon: ShoppingBag, asset: TAG_ASSETS.category.Shopping, className: "shopping", label: "Shopping", short: "Shop" },
   "Open Time": { icon: Clock3, asset: TAG_ASSETS.category["Open Time"], className: "open", label: "Open Time", short: "Open" }
 };
@@ -89,7 +89,6 @@ const DEFAULT_NEW_IDEA = {
   title: "",
   category: "Culture",
   city: "",
-  duration: 90,
   status: "Proposed",
   notes: "",
   cost: "",
@@ -128,17 +127,25 @@ function App() {
   const [ideaTab, setIdeaTab] = useState("Ideas");
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [newIdea, setNewIdea] = useState(DEFAULT_NEW_IDEA);
-  const [promoteTargetDayId, setPromoteTargetDayId] = useState(() => trip.days[0]?.id);
+  const [ideaPromotion, setIdeaPromotion] = useState(null);
   const [editingSchedule, setEditingSchedule] = useState(null);
   const [editingIdea, setEditingIdea] = useState(null);
   const [editingDay, setEditingDay] = useState(null);
   const [pendingImport, setPendingImport] = useState(null);
-  const [importError, setImportError] = useState("");
+  const [toasts, setToasts] = useState([]);
   const fileInputRef = useRef(null);
+  const toastTimersRef = useRef(new Map());
 
   useEffect(() => {
     saveTrip(trip);
   }, [trip]);
+
+  useEffect(() => {
+    return () => {
+      toastTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      toastTimersRef.current.clear();
+    };
+  }, []);
 
   const sortedDays = useMemo(() => deriveTripDays(trip.days), [trip.days]);
 
@@ -152,12 +159,6 @@ function App() {
       setSelectedDayId(sortedDays[0].id);
     }
   }, [selectedDay, sortedDays]);
-
-  useEffect(() => {
-    if (!sortedDays.some((day) => day.id === promoteTargetDayId) && sortedDays[0]) {
-      setPromoteTargetDayId(sortedDays[0].id);
-    }
-  }, [promoteTargetDayId, sortedDays]);
 
   const sortedSchedule = useMemo(() => sortSchedule(selectedDay?.schedule ?? []), [selectedDay]);
   const dayStats = useMemo(() => getDayStats(selectedDay), [selectedDay]);
@@ -178,6 +179,40 @@ function App() {
     }));
   }
 
+  function dismissToast(toastId) {
+    const timer = toastTimersRef.current.get(toastId);
+    if (timer) {
+      window.clearTimeout(timer);
+      toastTimersRef.current.delete(toastId);
+    }
+    setToasts((current) => current.filter((toast) => toast.id !== toastId));
+  }
+
+  function showToast({ type = "info", message }) {
+    const toast = {
+      id: `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      type,
+      message
+    };
+
+    setToasts((current) => {
+      const next = [...current, toast].slice(-3);
+      current
+        .filter((existingToast) => !next.some((nextToast) => nextToast.id === existingToast.id))
+        .forEach((droppedToast) => {
+          const timer = toastTimersRef.current.get(droppedToast.id);
+          if (timer) {
+            window.clearTimeout(timer);
+            toastTimersRef.current.delete(droppedToast.id);
+          }
+        });
+      return next;
+    });
+
+    const timer = window.setTimeout(() => dismissToast(toast.id), 4000);
+    toastTimersRef.current.set(toast.id, timer);
+  }
+
   function addTripDay() {
     const lastDay = sortedDays[sortedDays.length - 1];
     const nextDate = addDateDays(lastDay?.date ?? "2026-10-05", 1);
@@ -192,9 +227,9 @@ function App() {
 
     setTrip((current) => ({ ...current, days: [...current.days, newDay] }));
     setSelectedDayId(newDay.id);
-    setPromoteTargetDayId(newDay.id);
     setActiveView("day");
     setEditingDay(newDay);
+    showToast({ type: "success", message: "Day added" });
   }
 
   function saveTripDay(dayDraft) {
@@ -213,6 +248,7 @@ function App() {
       )
     }));
     setEditingDay(null);
+    showToast({ type: "success", message: "Day updated" });
   }
 
   function deleteTripDay(dayId) {
@@ -232,28 +268,57 @@ function App() {
       days: current.days.filter((candidate) => candidate.id !== dayId)
     }));
     setSelectedDayId(nextSelection.id);
-    setPromoteTargetDayId((currentTarget) => (currentTarget === dayId ? nextSelection.id : currentTarget));
+    setIdeaPromotion((currentPromotion) =>
+      currentPromotion?.dayId === dayId ? { ...currentPromotion, dayId: nextSelection.id } : currentPromotion
+    );
     setEditingDay(null);
+    showToast({ type: "success", message: "Day removed" });
   }
 
-  function saveScheduleItem(dayId, item) {
-    updateDay(dayId, (day) => {
-      const exists = day.schedule.some((scheduleItem) => scheduleItem.id === item.id);
+  function saveScheduleItem(dayId, item, consumedIdeaId) {
+    const targetDay = sortedDays.find((day) => day.id === dayId);
+    if (!targetDay) {
+      return;
+    }
+
+    const isExistingActivity = Boolean(targetDay?.schedule.some((scheduleItem) => scheduleItem.id === item.id));
+
+    setTrip((current) => {
+      const targetDay = current.days.find((day) => day.id === dayId);
+      if (!targetDay) {
+        return current;
+      }
+
+      const exists = targetDay.schedule.some((scheduleItem) => scheduleItem.id === item.id);
       const nextItem = {
         ...item,
         title: item.title.trim() || "Untitled plan",
-        city: item.city.trim() || day.city,
+        city: item.city.trim() || targetDay.city,
         duration: Number(item.duration) || 60
       };
 
       return {
-        ...day,
-        schedule: exists
-          ? day.schedule.map((scheduleItem) => (scheduleItem.id === item.id ? nextItem : scheduleItem))
-          : [...day.schedule, nextItem]
+        ...current,
+        days: current.days.map((day) => {
+          if (day.id !== dayId) {
+            return day;
+          }
+
+          return {
+            ...day,
+            schedule: exists
+              ? day.schedule.map((scheduleItem) => (scheduleItem.id === item.id ? nextItem : scheduleItem))
+              : [...day.schedule, nextItem]
+          };
+        }),
+        ideas: consumedIdeaId ? current.ideas.filter((idea) => idea.id !== consumedIdeaId) : current.ideas
       };
     });
     setEditingSchedule(null);
+    showToast({
+      type: "success",
+      message: consumedIdeaId ? "Added to itinerary" : isExistingActivity ? "Activity updated" : "Activity added"
+    });
   }
 
   function deleteScheduleItem(dayId, itemId) {
@@ -262,6 +327,7 @@ function App() {
       schedule: day.schedule.filter((item) => item.id !== itemId)
     }));
     setEditingSchedule(null);
+    showToast({ type: "success", message: "Activity deleted" });
   }
 
   function moveScheduleItem(sourceDayId, itemId, targetDayId, targetStart) {
@@ -345,13 +411,14 @@ function App() {
           id: `idea-${Date.now()}`,
           title: newIdea.title.trim(),
           city: newIdea.city.trim(),
-          duration: Number(newIdea.duration) || 60,
+          notes: newIdea.notes.trim(),
           votes: Object.fromEntries(current.travelers.map((name) => [name, ""]))
         },
         ...current.ideas
       ]
     }));
     setNewIdea(DEFAULT_NEW_IDEA);
+    showToast({ type: "success", message: "Idea saved" });
   }
 
   function saveIdea(idea) {
@@ -359,7 +426,7 @@ function App() {
       ...current,
       ideas: current.ideas.map((currentIdea) =>
         currentIdea.id === idea.id
-          ? { ...idea, title: idea.title.trim() || "Untitled idea", duration: Number(idea.duration) || 60 }
+          ? { ...idea, title: idea.title.trim() || "Untitled idea", notes: idea.notes?.trim() ?? "" }
           : currentIdea
       )
     }));
@@ -388,32 +455,41 @@ function App() {
     }));
   }
 
-  function promoteIdeaToDay(idea, dayId = promoteTargetDayId) {
+  function openIdeaPromotion(idea) {
+    setIdeaPromotion({ idea, dayId: sortedDays[0]?.id ?? "" });
+  }
+
+  function promoteIdeaToDay(idea, dayId) {
     const targetDay = sortedDays.find((day) => day.id === dayId) ?? selectedDay;
     if (!targetDay) {
       return;
     }
 
-    const block = {
-      id: `sched-${idea.id}-${Date.now()}`,
-      title: idea.title,
-      category: idea.category,
-      city: idea.city || targetDay.city,
-      start: suggestNextStart(targetDay.schedule),
-      duration: Number(idea.duration) || 60,
-      status: idea.status === "Skipped" ? "Proposed" : idea.status,
-      notes: idea.notes,
-      cost: idea.cost,
-      link: idea.link
-    };
-
-    updateDay(targetDay.id, (day) => ({ ...day, schedule: [...day.schedule, block] }));
     setSelectedDayId(targetDay.id);
-    setActiveView("day");
+    setIdeaPromotion(null);
+    setEditingSchedule({
+      mode: "new",
+      dayId: targetDay.id,
+      consumedIdeaId: idea.id,
+      item: {
+        ...DEFAULT_NEW_BLOCK,
+        id: `sched-${idea.id}-${Date.now()}`,
+        title: idea.title,
+        category: idea.category,
+        city: idea.city || targetDay.city,
+        start: suggestNextStart(targetDay.schedule),
+        status: idea.status === "Skipped" ? "Proposed" : idea.status,
+        notes: idea.notes ?? "",
+        cost: idea.cost ?? "",
+        link: idea.link ?? "",
+        mapLink: idea.mapLink ?? ""
+      }
+    });
   }
 
   function exportTrip() {
     downloadTripExport({ ...trip, dateRangeLabel });
+    showToast({ type: "info", message: "Trip export downloaded" });
   }
 
   function handleImportFile(event) {
@@ -427,13 +503,12 @@ function App() {
       try {
         const parsed = JSON.parse(String(reader.result));
         if (!isValidTrip(parsed)) {
-          setImportError("That file does not look like a Japan 2026 trip export.");
+          showToast({ type: "error", message: "Import file is not valid" });
           return;
         }
         setPendingImport(parsed);
-        setImportError("");
       } catch {
-        setImportError("The selected file could not be read as JSON.");
+        showToast({ type: "error", message: "Import file could not be read" });
       } finally {
         event.target.value = "";
       }
@@ -445,15 +520,16 @@ function App() {
     setTrip(pendingImport);
     const importedDays = deriveTripDays(pendingImport.days);
     setSelectedDayId(importedDays[0]?.id);
-    setPromoteTargetDayId(importedDays[0]?.id);
     setActiveView("trip");
     setTripBoardMode("calendar");
     setPendingImport(null);
+    showToast({ type: "success", message: "Planner imported" });
   }
 
   function mergeImportIdeas() {
     setTrip((current) => mergeIdeas(current, pendingImport));
     setPendingImport(null);
+    showToast({ type: "success", message: "Ideas imported" });
   }
 
   function resetPlanner() {
@@ -465,9 +541,9 @@ function App() {
     const starterDays = deriveTripDays(starterTrip.days);
     setTrip(starterTrip);
     setSelectedDayId(starterDays[0]?.id);
-    setPromoteTargetDayId(starterDays[0]?.id);
     setActiveView("trip");
     setTripBoardMode("calendar");
+    showToast({ type: "success", message: "Planner reset" });
   }
 
   return (
@@ -504,7 +580,7 @@ function App() {
         </div>
       </header>
 
-      {importError ? <div className="notice error">{importError}</div> : null}
+      <ToastRegion toasts={toasts} onDismiss={dismissToast} />
 
       <main className={`planner-grid is-${activeView}-view ${activeView === "day" && isDateRailCollapsed ? "is-rail-collapsed" : ""}`}>
         {activeView === "day" ? (
@@ -562,12 +638,9 @@ function App() {
             ideas={filteredIdeas}
             allIdeas={trip.ideas}
             travelers={trip.travelers}
-            days={sortedDays}
             ideaTab={ideaTab}
             categoryFilter={categoryFilter}
             newIdea={newIdea}
-            targetDayId={promoteTargetDayId}
-            onTargetDayChange={setPromoteTargetDayId}
             onTabChange={setIdeaTab}
             onCategoryChange={setCategoryFilter}
             onNewIdeaChange={setNewIdea}
@@ -575,7 +648,7 @@ function App() {
             onEditIdea={setEditingIdea}
             onDeleteIdea={deleteIdea}
             onVote={cycleVote}
-            onPromote={promoteIdeaToDay}
+            onPromote={openIdeaPromotion}
           />
         ) : null}
       </main>
@@ -586,8 +659,18 @@ function App() {
         <EditScheduleModal
           payload={editingSchedule}
           onCancel={() => setEditingSchedule(null)}
-          onSave={(item) => saveScheduleItem(editingSchedule.dayId, item)}
+          onSave={(item) => saveScheduleItem(editingSchedule.dayId, item, editingSchedule.consumedIdeaId)}
           onDelete={() => deleteScheduleItem(editingSchedule.dayId, editingSchedule.item.id)}
+        />
+      ) : null}
+
+      {ideaPromotion ? (
+        <PromoteIdeaModal
+          promotion={ideaPromotion}
+          days={sortedDays}
+          onDayChange={(dayId) => setIdeaPromotion((current) => (current ? { ...current, dayId } : current))}
+          onCancel={() => setIdeaPromotion(null)}
+          onContinue={() => promoteIdeaToDay(ideaPromotion.idea, ideaPromotion.dayId)}
         />
       ) : null}
 
@@ -642,6 +725,26 @@ function TagIcon({ src, size = "chip" }) {
   }
 
   return <img className={`tag-icon tag-icon-${size}`} src={src} alt="" aria-hidden="true" draggable={false} />;
+}
+
+function ToastRegion({ toasts, onDismiss }) {
+  if (!toasts.length) {
+    return null;
+  }
+
+  return (
+    <div className="toast-region" role="status" aria-live="polite" aria-relevant="additions text">
+      {toasts.map((toast) => (
+        <div className={`toast toast-${toast.type}`} key={toast.id}>
+          <span className="toast-marker" aria-hidden="true" />
+          <span className="toast-message">{toast.message}</span>
+          <button className="toast-close" type="button" aria-label={`Dismiss ${toast.message}`} onClick={() => onDismiss(toast.id)}>
+            <X size={15} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function ViewSwitcher({ activeView, ideasCount, onChange }) {
@@ -1299,12 +1402,9 @@ function IdeasSection({
   ideas,
   allIdeas,
   travelers,
-  days,
   ideaTab,
   categoryFilter,
   newIdea,
-  targetDayId,
-  onTargetDayChange,
   onTabChange,
   onCategoryChange,
   onNewIdeaChange,
@@ -1314,8 +1414,6 @@ function IdeasSection({
   onVote,
   onPromote
 }) {
-  const targetDay = days.find((day) => day.id === targetDayId) ?? days[0];
-
   return (
     <section className="ideas-section" aria-label="Ideas and proposals">
       <div className="ideas-section-header">
@@ -1323,16 +1421,6 @@ function IdeasSection({
           <h1>Ideas</h1>
           <p>{allIdeas.length} saved</p>
         </div>
-        <label className="target-day-picker">
-          To
-          <select value={targetDay?.id ?? ""} onChange={(event) => onTargetDayChange(event.target.value)}>
-            {days.map((day) => (
-              <option value={day.id} key={day.id}>
-                Day {day.dayNumber} - {formatShortDate(day.date)} - {day.city}
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
 
       <div className="ideas-workspace">
@@ -1370,15 +1458,13 @@ function IdeasSection({
                 <option key={status}>{status}</option>
               ))}
             </select>
-            <input
-              min="15"
-              step="15"
-              type="number"
-              value={newIdea.duration}
-              aria-label="New idea duration in minutes"
-              onChange={(event) => onNewIdeaChange((current) => ({ ...current, duration: Number(event.target.value) }))}
-            />
           </div>
+          <textarea
+            value={newIdea.notes}
+            placeholder="Why it sounds good"
+            aria-label="New idea notes"
+            onChange={(event) => onNewIdeaChange((current) => ({ ...current, notes: event.target.value }))}
+          />
           <button className="primary-button full-width" type="submit">
             <Plus size={17} />
             Add
@@ -1404,11 +1490,10 @@ function IdeasSection({
                 idea={idea}
                 key={idea.id}
                 travelers={travelers}
-                targetDay={targetDay}
                 onEdit={() => onEditIdea(idea)}
                 onDelete={() => onDeleteIdea(idea.id)}
                 onVote={(traveler) => onVote(idea.id, traveler)}
-                onPromote={() => onPromote(idea, targetDay?.id)}
+                onPromote={() => onPromote(idea)}
               />
             ))}
           </div>
@@ -1427,7 +1512,7 @@ function IdeaFilters({ activeCategory, onChange }) {
         return (
           <button className={activeCategory === category ? "is-active" : ""} type="button" key={category} onClick={() => onChange(category)}>
             {config?.asset ? <TagIcon src={config.asset} size="chip" /> : <Icon size={17} />}
-            {category === "All" ? "All" : config.short}
+            {formatCategoryFilterLabel(category)}
           </button>
         );
       })}
@@ -1435,7 +1520,7 @@ function IdeaFilters({ activeCategory, onChange }) {
   );
 }
 
-function IdeaRow({ idea, travelers, targetDay, onEdit, onDelete, onVote, onPromote }) {
+function IdeaRow({ idea, travelers, onEdit, onDelete, onVote, onPromote }) {
   const config = getCategoryConfig(idea.category);
 
   return (
@@ -1447,10 +1532,6 @@ function IdeaRow({ idea, travelers, targetDay, onEdit, onDelete, onVote, onPromo
         <strong>{idea.title}</strong>
         <small>{idea.city || "Japan"}</small>
         <span className="idea-meta-line">
-          <span>
-            <Clock3 size={14} />
-            {formatDuration(Number(idea.duration) || 60)}
-          </span>
           <span className={`status-pill ${STATUS_CLASS[idea.status]}`}>
             <TagIcon src={STATUS_ASSETS[idea.status]} size="tiny" />
             {idea.status}
@@ -1470,9 +1551,47 @@ function IdeaRow({ idea, travelers, targetDay, onEdit, onDelete, onVote, onPromo
       </div>
       <button className="promote-button" type="button" onClick={onPromote}>
         <Plus size={16} />
-        Day {targetDay?.dayNumber ?? ""}
+        Add as Activity
       </button>
     </article>
+  );
+}
+
+function PromoteIdeaModal({ promotion, days, onDayChange, onCancel, onContinue }) {
+  const selectedDay = days.find((day) => day.id === promotion.dayId) ?? days[0];
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <div className="dialog promote-dialog" role="dialog" aria-modal="true" aria-label="Add idea as activity">
+        <DialogHeader title="Add as activity" onClose={onCancel} />
+        <div className="promote-summary">
+          <TagIcon src={getCategoryConfig(promotion.idea.category).asset} size="chip" />
+          <div>
+            <strong>{promotion.idea.title}</strong>
+            <span>{promotion.idea.city || "Japan"}</span>
+          </div>
+        </div>
+        <label className="editor-field">
+          Choose day
+          <select value={selectedDay?.id ?? ""} onChange={(event) => onDayChange(event.target.value)}>
+            {days.map((day) => (
+              <option value={day.id} key={day.id}>
+                Day {day.dayNumber} - {formatShortDate(day.date)} - {day.city}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="dialog-note">Next you can set the exact time, duration, map, cost, and notes.</p>
+        <div className="dialog-actions">
+          <button className="ghost-button" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="primary-button" type="button" onClick={onContinue} disabled={!selectedDay}>
+            Continue
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1661,10 +1780,6 @@ function EditIdeaModal({ idea, onCancel, onSave, onDelete }) {
             </select>
           </label>
           <label>
-            Duration
-            <input min="15" step="15" type="number" value={draft.duration} onChange={(event) => updateDraft({ duration: Number(event.target.value) })} />
-          </label>
-          <label>
             City
             <input value={draft.city} onChange={(event) => updateDraft({ city: event.target.value })} />
           </label>
@@ -1798,6 +1913,16 @@ function TravelStrip() {
 
 function getCategoryConfig(category) {
   return CATEGORY_CONFIG[category] ?? CATEGORY_CONFIG["Open Time"];
+}
+
+function formatCategoryFilterLabel(category) {
+  if (category === "All") {
+    return "All";
+  }
+  if (category === "Open Time") {
+    return "Open";
+  }
+  return getCategoryConfig(category).label;
 }
 
 function getDayStats(day) {

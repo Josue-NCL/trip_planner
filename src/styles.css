@@ -348,6 +348,75 @@ textarea:focus {
   font-weight: 800;
 }
 
+.toast-region {
+  position: fixed;
+  top: 22px;
+  right: 22px;
+  z-index: 1200;
+  display: grid;
+  width: min(360px, calc(100vw - 32px));
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 9px 8px 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 16px 38px rgba(20, 36, 64, 0.14);
+  pointer-events: auto;
+}
+
+.toast-marker {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--navy);
+}
+
+.toast-success .toast-marker {
+  background: #2d7a56;
+}
+
+.toast-info .toast-marker {
+  background: var(--navy);
+}
+
+.toast-error .toast-marker {
+  background: #c24742;
+}
+
+.toast-message {
+  overflow: hidden;
+  font-size: 0.9rem;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toast-close {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  color: #526177;
+  background: transparent;
+}
+
+.toast-close:hover {
+  color: var(--ink);
+  background: #eef3fa;
+}
+
 .planner-grid {
   display: grid;
   grid-template-columns: 270px minmax(0, 1fr);
@@ -1186,6 +1255,10 @@ textarea:focus {
   border-bottom: 1px solid var(--line-soft);
 }
 
+.idea-form textarea {
+  min-height: 96px;
+}
+
 .form-row,
 .idea-fields {
   display: grid;
@@ -1405,6 +1478,44 @@ textarea:focus {
   grid-column: 2 / 4;
   justify-self: stretch;
   margin: 0 10px 10px 0;
+}
+
+.promote-dialog {
+  max-width: 460px;
+}
+
+.promote-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 16px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7fbff;
+}
+
+.promote-summary div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.promote-summary strong,
+.promote-summary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.promote-summary span,
+.dialog-note {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.dialog-note {
+  margin: 12px 0 0;
 }
 
 .trip-board {
@@ -2157,7 +2268,7 @@ textarea:focus {
   }
 
   .ideas-section .idea-list {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(260px, 1fr));
   }
 
   .trip-day-list .trip-day-card {
@@ -2286,6 +2397,18 @@ textarea:focus {
 }
 
 @media (max-width: 560px) {
+  .toast-region {
+    top: auto;
+    right: 12px;
+    bottom: 12px;
+    left: 12px;
+    width: auto;
+  }
+
+  .toast {
+    min-height: 44px;
+  }
+
   .topbar-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
