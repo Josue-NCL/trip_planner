@@ -194,8 +194,17 @@ textarea:focus {
 
 .trip-picker-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 8px;
+}
+
+.trip-picker-actions .ghost-button,
+.trip-picker-actions .primary-button {
+  width: 100%;
+  min-height: 48px;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.15;
 }
 
 .trip-list {
