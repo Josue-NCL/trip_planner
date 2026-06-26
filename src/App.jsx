@@ -302,6 +302,7 @@ function App() {
   );
   const currentTravelerName = currentTraveler?.name ?? "";
   const canManageSharing = currentMember?.role === "owner";
+  const peopleCount = collaboration.travelers.length || trip.travelers.length;
   const pendingInvitations = useMemo(
     () => collaboration.invitations.filter((invite) => invite.status === "pending"),
     [collaboration.invitations]
@@ -1049,7 +1050,8 @@ function App() {
           {!isLocalPreview && selectedTripId ? (
             <button className="ghost-button" type="button" onClick={() => setIsSharingOpen(true)}>
               <Users size={17} />
-              Share
+              People
+              <span className="people-count-badge">{peopleCount}</span>
             </button>
           ) : null}
           <button className="ghost-button" type="button" onClick={exportTrip}>
@@ -1130,6 +1132,7 @@ function App() {
             travelers={trip.travelers}
             currentTravelerName={currentTravelerName}
             canVoteAllTravelers={isLocalPreview || !selectedTripId}
+            isLocalPreview={isLocalPreview}
             ideaTab={ideaTab}
             categoryFilter={categoryFilter}
             newIdea={newIdea}
@@ -1212,7 +1215,10 @@ function App() {
         <SharingModal
           collaboration={collaboration}
           currentUserId={session?.user?.id}
+          currentMember={currentMember}
+          currentTraveler={currentTraveler}
           canManage={canManageSharing}
+          syncStatus={syncStatus}
           status={collaborationStatus}
           newInvite={newInvite}
           latestInviteUrl={latestInviteUrl}
@@ -2106,6 +2112,7 @@ function IdeasSection({
   travelers,
   currentTravelerName,
   canVoteAllTravelers,
+  isLocalPreview,
   ideaTab,
   categoryFilter,
   newIdea,
@@ -2176,6 +2183,13 @@ function IdeasSection({
         </form>
 
         <div className="ideas-browser">
+          {!isLocalPreview && currentTravelerName ? (
+            <div className="voting-identity-note">
+              <Heart size={15} />
+              Voting as <strong>{currentTravelerName}</strong>
+            </div>
+          ) : null}
+
           <div className="ideas-tabs">
             {FILTER_TABS.map((tab) => (
               <button className={ideaTab === tab ? "is-active" : ""} type="button" key={tab} onClick={() => onTabChange(tab)}>
@@ -2255,7 +2269,7 @@ function IdeaRow({ idea, travelers, currentTravelerName, canVoteAllTravelers, on
               key={traveler}
               disabled={!isLinkedTraveler}
               onClick={() => onVote(traveler)}
-              title={isLinkedTraveler ? `${traveler}: ${VOTE_LABELS[vote]}` : `${traveler} is linked to another traveler`}
+              title={isLinkedTraveler ? `${traveler}: ${VOTE_LABELS[vote]}` : `Only ${traveler} can vote here`}
             >
               <span>{traveler.slice(0, 1)}</span>
               <Heart size={19} fill={vote === "love" ? "currentColor" : "none"} />
@@ -2274,7 +2288,10 @@ function IdeaRow({ idea, travelers, currentTravelerName, canVoteAllTravelers, on
 function SharingModal({
   collaboration,
   currentUserId,
+  currentMember,
+  currentTraveler,
   canManage,
+  syncStatus,
   status,
   newInvite,
   latestInviteUrl,
@@ -2289,70 +2306,86 @@ function SharingModal({
 }) {
   const availableInviteTravelers = collaboration.travelers.filter((traveler) => !traveler.profileId);
   const inviteTravelerOptions = availableInviteTravelers.length ? availableInviteTravelers : collaboration.travelers;
+  const currentRole = formatRoleLabel(currentMember?.role ?? "editor");
+  const currentTravelerLabel = currentTraveler?.name ?? "Not linked yet";
 
   return (
     <div className="dialog-backdrop" role="presentation">
-      <div className="dialog sharing-dialog" role="dialog" aria-modal="true" aria-label="Trip sharing">
-        <DialogHeader title="Trip sharing" onClose={onClose} />
+      <div className="dialog sharing-dialog people-dialog" role="dialog" aria-modal="true" aria-label="People">
+        <DialogHeader title="People" onClose={onClose} />
 
-        <div className="sharing-grid">
-          <section className="sharing-section">
-            <div className="sharing-section-title">
-              <strong>Members</strong>
-              <button className="icon-button flat" type="button" aria-label="Refresh members" onClick={onRefresh}>
-                <RefreshCcw size={16} />
-              </button>
-            </div>
-            <div className="sharing-list">
-              {collaboration.members.map((member) => (
-                <div className="sharing-row" key={member.profileId}>
-                  <span>
-                    <strong>{member.displayName}</strong>
-                    <small>{member.email || "No email"}</small>
-                  </span>
-                  <span className={`role-pill role-${member.role}`}>{member.role}</span>
-                </div>
-              ))}
-              {!collaboration.members.length ? <p className="empty-trip-list">No members loaded yet.</p> : null}
-            </div>
-          </section>
+        <section className="people-summary" aria-label="Your trip identity">
+          <div>
+            <span>You are planning as</span>
+            <strong>{currentTravelerLabel}</strong>
+            <small>{currentTraveler?.email || currentTraveler?.displayName || "Choose a traveler below"}</small>
+          </div>
+          <div>
+            <span>Trip role</span>
+            <strong>{currentRole}</strong>
+            <small>{canManage ? "Can invite people" : "Can edit the planner"}</small>
+          </div>
+          <div>
+            <span>Sync</span>
+            <strong>{formatSyncStatus(syncStatus)}</strong>
+            <small>{status === "loading" ? "Refreshing people" : "Shared through Supabase"}</small>
+          </div>
+        </section>
 
-          <section className="sharing-section">
-            <div className="sharing-section-title">
+        <section className="sharing-section people-section">
+          <div className="sharing-section-title">
+            <div>
               <strong>Travelers</strong>
+              <small>Pick who each signed-in person represents for voting.</small>
             </div>
-            <div className="sharing-list">
-              {collaboration.travelers.map((traveler) => {
-                const isCurrentUser = traveler.profileId === currentUserId;
-                const canClaim = !traveler.profileId || isCurrentUser;
-                return (
-                  <div className="sharing-row" key={traveler.id}>
-                    <span>
-                      <strong>{traveler.name}</strong>
-                      <small>{traveler.email || (traveler.profileId ? traveler.displayName : "Not linked")}</small>
-                    </span>
-                    {isCurrentUser ? (
-                      <span className="role-pill role-owner">You</span>
-                    ) : (
-                      <button className="ghost-button compact-action" type="button" disabled={!canClaim} onClick={() => onClaimTraveler(traveler.id)}>
-                        {traveler.profileId ? "Linked" : "Claim me"}
-                      </button>
-                    )}
+            <button className="icon-button flat" type="button" aria-label="Refresh people" onClick={onRefresh}>
+              <RefreshCcw size={16} />
+            </button>
+          </div>
+          <div className="traveler-card-grid">
+            {collaboration.travelers.map((traveler) => {
+              const isCurrentUser = traveler.profileId === currentUserId;
+              const canUseTraveler = !traveler.profileId || isCurrentUser;
+              const accountLabel = traveler.email || (traveler.profileId ? traveler.displayName : "No account linked");
+              return (
+                <article className={`traveler-card${isCurrentUser ? " is-current-user" : ""}`} key={traveler.id}>
+                  <div className="traveler-avatar" aria-hidden="true">{traveler.name.slice(0, 1)}</div>
+                  <div className="traveler-card-main">
+                    <h3>{traveler.name}</h3>
+                    <p>{accountLabel}</p>
+                    <div className="traveler-card-tags">
+                      {isCurrentUser ? <span className="role-pill role-you">You</span> : null}
+                      <span className={`role-pill ${traveler.profileId ? "role-linked" : "role-unlinked"}`}>
+                        {traveler.profileId ? "Linked" : "Available"}
+                      </span>
+                      {isCurrentUser ? <span className="role-pill role-editor">Voting identity</span> : null}
+                    </div>
                   </div>
-                );
-              })}
-            </div>
-          </section>
-        </div>
+                  {isCurrentUser ? (
+                    <span className="traveler-card-action">Planning as you</span>
+                  ) : (
+                    <button className="ghost-button compact-action" type="button" disabled={!canUseTraveler} onClick={() => onClaimTraveler(traveler.id)}>
+                      {traveler.profileId ? "Linked" : "Use this as me"}
+                    </button>
+                  )}
+                </article>
+              );
+            })}
+            {!collaboration.travelers.length ? <p className="empty-trip-list">No travelers loaded yet.</p> : null}
+          </div>
+        </section>
 
         {canManage ? (
-          <section className="sharing-section invite-panel">
+          <section className="sharing-section invite-panel people-invite-panel">
             <div className="sharing-section-title">
-              <strong>Invite editor</strong>
+              <div>
+                <strong>Invite someone</strong>
+                <small>They will join as an editor and vote as the traveler you choose.</small>
+              </div>
             </div>
             <form className="invite-form" onSubmit={onSubmitInvite}>
               <label className="editor-field">
-                Email
+                Their email
                 <input
                   type="email"
                   value={newInvite.email}
@@ -2362,7 +2395,7 @@ function SharingModal({
                 />
               </label>
               <label className="editor-field">
-                Traveler
+                They will plan as
                 <select
                   value={newInvite.travelerId}
                   onChange={(event) => onNewInviteChange((current) => ({ ...current, travelerId: event.target.value }))}
@@ -2378,7 +2411,7 @@ function SharingModal({
               </label>
               <button className="primary-button" type="submit" disabled={!newInvite.email.trim() || !newInvite.travelerId}>
                 <UserPlus size={17} />
-                Create invite
+                Create invite link
               </button>
             </form>
 
@@ -2396,6 +2429,9 @@ function SharingModal({
             ) : null}
 
             <div className="sharing-list">
+              <div className="sharing-section-title compact-title">
+                <strong>Pending invites</strong>
+              </div>
               {pendingInvitations.map((invite) => (
                 <div className="sharing-row" key={invite.id}>
                   <span>
@@ -2411,8 +2447,29 @@ function SharingModal({
             </div>
           </section>
         ) : (
-          <p className="dialog-note">{status === "loading" ? "Loading sharing details..." : "Only the trip owner can invite editors."}</p>
+          <p className="dialog-note">{status === "loading" ? "Loading people..." : "Only the trip owner can invite people."}</p>
         )}
+
+        <section className="sharing-section people-members-section">
+          <div className="sharing-section-title">
+            <div>
+              <strong>Account access</strong>
+              <small>These signed-in accounts can open and edit this trip.</small>
+            </div>
+          </div>
+          <div className="sharing-list people-member-list">
+            {collaboration.members.map((member) => (
+              <div className="sharing-row" key={member.profileId}>
+                <span>
+                  <strong>{member.displayName}</strong>
+                  <small>{member.email || "No email"}</small>
+                </span>
+                <span className={`role-pill role-${member.role}`}>{formatRoleLabel(member.role)}</span>
+              </div>
+            ))}
+            {!collaboration.members.length ? <p className="empty-trip-list">No account access loaded yet.</p> : null}
+          </div>
+        </section>
       </div>
     </div>
   );
@@ -2797,6 +2854,15 @@ function formatSyncStatus(status) {
   };
 
   return labels[status] ?? "Ready";
+}
+
+function formatRoleLabel(role) {
+  const labels = {
+    owner: "Owner",
+    editor: "Editor"
+  };
+
+  return labels[role] ?? "Editor";
 }
 
 function getDayStats(day) {

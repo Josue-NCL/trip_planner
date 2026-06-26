@@ -727,6 +727,20 @@ textarea:focus {
   background: var(--navy-soft);
 }
 
+.people-count-badge {
+  display: inline-flex;
+  min-width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  margin-left: 1px;
+  border-radius: 999px;
+  color: var(--navy);
+  background: #e8f0ff;
+  font-size: 0.75rem;
+  font-weight: 900;
+}
+
 .file-input {
   display: none;
 }
@@ -1671,9 +1685,31 @@ textarea:focus {
 
 .ideas-browser {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   min-width: 0;
   overflow: hidden;
+}
+
+.voting-identity-note {
+  display: inline-flex;
+  width: fit-content;
+  max-width: calc(100% - 32px);
+  align-items: center;
+  gap: 7px;
+  margin: 12px 20px 0;
+  padding: 7px 10px;
+  border: 1px solid #d5e4f8;
+  border-radius: 999px;
+  color: var(--navy);
+  background: #f5f9ff;
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.voting-identity-note strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ideas-tabs {
@@ -1974,6 +2010,53 @@ textarea:focus {
   width: min(860px, 100%);
 }
 
+.people-dialog {
+  width: min(940px, 100%);
+}
+
+.people-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.people-summary div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 12px;
+  border: 1px solid #dce7f6;
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(234, 241, 255, 0.9), rgba(255, 255, 255, 0.96));
+}
+
+.people-summary span,
+.sharing-section-title small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.people-summary strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.people-summary small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sharing-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2000,6 +2083,100 @@ textarea:focus {
 
 .sharing-section-title strong {
   font-size: 0.95rem;
+}
+
+.sharing-section-title > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sharing-section-title small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.people-section {
+  background: #ffffff;
+}
+
+.traveler-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.traveler-card {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.traveler-card.is-current-user {
+  border-color: #bcd1f2;
+  background: linear-gradient(135deg, #f1f7ff, #ffffff);
+  box-shadow: 0 10px 26px rgba(13, 52, 119, 0.08);
+}
+
+.traveler-avatar {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 1px solid #d3e0f3;
+  border-radius: 50%;
+  color: var(--navy);
+  background: #eef5ff;
+  font-size: 1.05rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.traveler-card-main {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.traveler-card-main h3,
+.traveler-card-main p {
+  overflow: hidden;
+  margin: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.traveler-card-main h3 {
+  font-size: 1rem;
+}
+
+.traveler-card-main p {
+  color: var(--muted);
+  font-size: 0.83rem;
+  font-weight: 700;
+}
+
+.traveler-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.traveler-card-action {
+  justify-self: end;
+  color: var(--booked-text);
+  font-size: 0.82rem;
+  font-weight: 900;
+  white-space: nowrap;
 }
 
 .sharing-list {
@@ -2057,8 +2234,32 @@ textarea:focus {
   background: #fff2c7;
 }
 
+.role-you {
+  color: #ffffff;
+  background: var(--navy);
+}
+
+.role-linked {
+  color: var(--booked-text);
+  background: var(--booked);
+}
+
+.role-unlinked {
+  color: var(--muted);
+  background: #eef1f6;
+}
+
 .invite-panel {
   margin-top: 12px;
+}
+
+.people-invite-panel,
+.people-members-section {
+  margin-top: 12px;
+}
+
+.compact-title {
+  min-height: 0;
 }
 
 .invite-form,
@@ -2593,11 +2794,12 @@ textarea:focus {
 .dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  z-index: 1100;
   display: grid;
   place-items: center;
   padding: 24px;
   background: rgba(10, 19, 35, 0.35);
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 
@@ -3077,6 +3279,8 @@ textarea:focus {
   }
 
   .sharing-grid,
+  .people-summary,
+  .traveler-card-grid,
   .invite-form,
   .invite-link-box {
     grid-template-columns: 1fr;
@@ -3084,6 +3288,21 @@ textarea:focus {
 
   .sharing-row {
     align-items: flex-start;
+  }
+
+  .traveler-card {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+
+  .traveler-avatar {
+    width: 40px;
+    height: 40px;
+  }
+
+  .traveler-card .compact-action,
+  .traveler-card-action {
+    grid-column: 2;
+    justify-self: start;
   }
 }
 
