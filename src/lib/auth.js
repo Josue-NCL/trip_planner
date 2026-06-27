@@ -1,4 +1,5 @@
 import { requireSupabase, supabase } from "./supabaseClient.js";
+import { buildCurrentTripUrl } from "./url.js";
 
 export async function getCurrentSession() {
   if (!supabase) {
@@ -24,7 +25,7 @@ export function onAuthSessionChange(callback) {
 
 export async function sendMagicLink(email) {
   const client = requireSupabase();
-  const redirectTo = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+  const redirectTo = buildCurrentTripUrl();
   const { error } = await client.auth.signInWithOtp({
     email,
     options: {

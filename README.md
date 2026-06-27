@@ -28,7 +28,10 @@ Create a local `.env` from `.env.example`:
 ```sh
 VITE_SUPABASE_URL=
 VITE_SUPABASE_ANON_KEY=
+VITE_PUBLIC_TRIP_URL=https://neoncartridgelabs.com/trip/
 ```
+
+`VITE_PUBLIC_TRIP_URL` is the canonical deployed trip URL used for Supabase magic-link redirects and invite links. Set it to the custom domain path, not the Netlify preview URL.
 
 The Supabase schema is tracked in `supabase/migrations/` and has been applied to the connected project.
 

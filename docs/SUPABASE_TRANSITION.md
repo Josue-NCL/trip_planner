@@ -19,7 +19,10 @@ Browser-safe values:
 ```sh
 VITE_SUPABASE_URL=
 VITE_SUPABASE_ANON_KEY=
+VITE_PUBLIC_TRIP_URL=https://neoncartridgelabs.com/trip/
 ```
+
+`VITE_PUBLIC_TRIP_URL` should match the production custom-domain path so Supabase magic links and generated invite links return to the `.com` deployment instead of a Netlify preview URL.
 
 Never expose service-role keys or database passwords in Vite client code.
 

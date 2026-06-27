@@ -1,4 +1,5 @@
 import { requireSupabase } from "./supabaseClient.js";
+import { buildTripInviteUrl } from "./url.js";
 
 const INVITE_TOKEN_BYTES = 32;
 
@@ -135,10 +136,7 @@ async function sha256Hex(value) {
 }
 
 function buildInviteUrl(inviteToken) {
-  const url = new URL(window.location.href);
-  url.searchParams.delete("preview");
-  url.searchParams.set("invite", inviteToken);
-  return url.toString();
+  return buildTripInviteUrl(inviteToken);
 }
 
 function normalizeEmail(email) {
