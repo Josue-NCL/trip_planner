@@ -46,7 +46,7 @@ The app is meant for a small group, currently modeled around named travelers suc
 The app currently supports:
 
 - Supabase magic-link sign-in.
-- Local preview mode during development when available.
+- Development testing should use the authenticated Supabase flow.
 - Trip picker after sign-in.
 - Creating a starter Japan 2026 trip.
 - Importing an existing local planner into Supabase.

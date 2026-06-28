@@ -3,6 +3,8 @@ import {
   Bed,
   CalendarDays,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Copy,
   Download,
@@ -15,6 +17,7 @@ import {
   LogOut,
   Mail,
   MapPin,
+  Minus,
   MoreVertical,
   PanelLeftClose,
   PanelLeftOpen,
@@ -43,9 +46,20 @@ const CATEGORY_FILTERS = ["All", "Food", "Culture", "Transit", "Hotel", "Shoppin
 const TIME_GRID_START_MINUTES = 7 * 60;
 const TIME_GRID_END_MINUTES = 22 * 60;
 const TIME_GRID_STEP_MINUTES = 30;
+const RESIZE_STEP_MINUTES = 15;
+const MIN_SCHEDULE_DURATION_MINUTES = 15;
+const TIME_PICKER_HOURS = Array.from({ length: 12 }, (_, index) => index + 1);
+const TIME_PICKER_MINUTES = [0, 15, 30, 45];
+const TIME_PICKER_PERIODS = ["AM", "PM"];
 const DAY_TIME_GRID_ROW_HEIGHT = 48;
 const TRIP_TIME_GRID_ROW_HEIGHT = 60;
+const ASSET_BASE = `${import.meta.env.BASE_URL}assets/`;
 const ICON_BASE = `${import.meta.env.BASE_URL}assets/icons/`;
+const FLAG_ASSET = `${ASSET_BASE}japan-flag-title.png`;
+const FOOTER_STRIP_ASSET = `${ASSET_BASE}japan-footer-strip.png`;
+const GOOGLE_MAPS_EMBED_KEY = import.meta.env.VITE_GOOGLE_MAPS_EMBED_KEY ?? "";
+const LOCAL_REALTIME_ECHO_SUPPRESSION_MS = 4000;
+const LAST_SELECTED_TRIP_KEY = "japan-2026-last-selected-trip:v1";
 
 const TAG_ASSETS = {
   category: {
@@ -102,6 +116,7 @@ const DEFAULT_NEW_IDEA = {
   notes: "",
   cost: "",
   link: "",
+  mapLink: "",
   imageKey: ""
 };
 
@@ -126,7 +141,6 @@ const VOTE_LABELS = {
   love: "Love"
 };
 
-const IS_DEV_LOCAL_PREVIEW = import.meta.env.DEV;
 const EMPTY_COLLABORATION = {
   members: [],
   travelers: [],
@@ -136,12 +150,6 @@ const EMPTY_COLLABORATION = {
 function App() {
   const [trip, setTrip] = useState(loadTrip);
   const [selectedDayId, setSelectedDayId] = useState(() => trip.days[0]?.id);
-  const [isLocalPreview, setIsLocalPreview] = useState(() => {
-    if (!IS_DEV_LOCAL_PREVIEW || typeof window === "undefined") {
-      return false;
-    }
-    return new URLSearchParams(window.location.search).get("preview") === "1";
-  });
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authEmail, setAuthEmail] = useState("");
@@ -178,10 +186,11 @@ function App() {
   const saveTimerRef = useRef(null);
   const realtimeTimerRef = useRef(null);
   const skipNextSaveRef = useRef(false);
+  const localRealtimeSuppressionUntilRef = useRef(0);
   const acceptingInviteRef = useRef("");
 
   useEffect(() => {
-    if (!isSupabaseConfigured || isLocalPreview) {
+    if (!isSupabaseConfigured) {
       setAuthLoading(false);
       return undefined;
     }
@@ -221,10 +230,10 @@ function App() {
       window.clearTimeout(saveTimerRef.current);
       window.clearTimeout(realtimeTimerRef.current);
     };
-  }, [isLocalPreview]);
+  }, []);
 
   useEffect(() => {
-    if (!session || isLocalPreview) {
+    if (!session) {
       return;
     }
 
@@ -234,10 +243,10 @@ function App() {
         setTripListStatus("error");
         showToast({ type: "error", message: error.message });
       });
-  }, [session, isLocalPreview]);
+  }, [session]);
 
   useEffect(() => {
-    if (isLocalPreview || !session || !inviteToken || acceptingInviteRef.current === inviteToken) {
+    if (!session || !inviteToken || acceptingInviteRef.current === inviteToken) {
       return;
     }
 
@@ -255,7 +264,7 @@ function App() {
         setInviteAcceptStatus("accepted");
         if (tripId) {
           await refreshTripSummaries({ silent: true });
-          setSelectedTripId(tripId);
+          selectTrip(tripId);
           setActiveView("trip");
           showToast({ type: "success", message: "Invite accepted" });
         }
@@ -270,7 +279,7 @@ function App() {
     return () => {
       isCurrent = false;
     };
-  }, [inviteToken, isLocalPreview, session]);
+  }, [inviteToken, session]);
 
   const sortedDays = useMemo(() => deriveTripDays(trip.days), [trip.days]);
 
@@ -309,7 +318,7 @@ function App() {
   );
 
   useEffect(() => {
-    if (isLocalPreview || !session || !selectedTripId) {
+    if (!session || !selectedTripId) {
       setCollaboration(EMPTY_COLLABORATION);
       return;
     }
@@ -347,19 +356,19 @@ function App() {
     return () => {
       isCurrent = false;
     };
-  }, [selectedTripId, session, isLocalPreview]);
+  }, [selectedTripId, session]);
 
   useEffect(() => {
-    if (isLocalPreview || !session || !selectedTripId || !tripLoaded) {
+    if (!session || !selectedTripId || !tripLoaded) {
       setCollaboration(EMPTY_COLLABORATION);
       return;
     }
 
     refreshCollaboration({ silent: true });
-  }, [selectedTripId, session, tripLoaded, isLocalPreview]);
+  }, [selectedTripId, session, tripLoaded]);
 
   useEffect(() => {
-    if (isLocalPreview || !session || !selectedTripId || !tripLoaded) {
+    if (!session || !selectedTripId || !tripLoaded) {
       return undefined;
     }
 
@@ -372,12 +381,15 @@ function App() {
     setSyncStatus("saving");
     const snapshot = { ...trip, dateRangeLabel };
     saveTimerRef.current = window.setTimeout(() => {
+      suppressLocalRealtimeEcho();
       replaceTripPayload(selectedTripId, snapshot)
         .then(() => {
+          suppressLocalRealtimeEcho();
           setSyncStatus("saved");
           refreshTripSummaries({ silent: true });
         })
         .catch((error) => {
+          localRealtimeSuppressionUntilRef.current = 0;
           setSyncStatus("error");
           showToast({ type: "error", message: error.message });
         });
@@ -386,14 +398,19 @@ function App() {
     return () => {
       window.clearTimeout(saveTimerRef.current);
     };
-  }, [trip, dateRangeLabel, selectedTripId, session, tripLoaded, isLocalPreview]);
+  }, [trip, dateRangeLabel, selectedTripId, session, tripLoaded]);
 
   useEffect(() => {
-    if (isLocalPreview || !session || !selectedTripId || !tripLoaded) {
+    if (!session || !selectedTripId || !tripLoaded) {
       return undefined;
     }
 
     return subscribeToTripChanges(selectedTripId, () => {
+      if (isLocalRealtimeEcho()) {
+        window.clearTimeout(realtimeTimerRef.current);
+        return;
+      }
+
       window.clearTimeout(realtimeTimerRef.current);
       realtimeTimerRef.current = window.setTimeout(() => {
         loadRemoteTrip(selectedTripId)
@@ -409,7 +426,7 @@ function App() {
           });
       }, 1000);
     });
-  }, [selectedTripId, session, tripLoaded, isLocalPreview]);
+  }, [selectedTripId, session, tripLoaded]);
 
   async function refreshTripSummaries({ silent = false } = {}) {
     if (!silent) {
@@ -418,10 +435,44 @@ function App() {
     const summaries = await listTrips(session?.user?.id);
     setTripSummaries(summaries);
     setTripListStatus("ready");
+    restoreLastSelectedTrip(summaries);
+  }
+
+  function selectTrip(tripId) {
+    const nextTripId = Number(tripId);
+    if (!nextTripId) {
+      return;
+    }
+
+    rememberSelectedTrip(session?.user?.id, nextTripId);
+    setSelectedTripId(nextTripId);
+  }
+
+  function openTripPicker() {
+    setSelectedTripId(null);
+    setTripLoaded(false);
+    setTripLoading(false);
+    setSyncStatus("idle");
+    setCollaboration(EMPTY_COLLABORATION);
+  }
+
+  function restoreLastSelectedTrip(summaries) {
+    if (selectedTripId || inviteToken) {
+      return;
+    }
+
+    const rememberedTripId = readRememberedTripId(session?.user?.id);
+    if (!rememberedTripId) {
+      return;
+    }
+
+    if (summaries.some((summary) => summary.id === rememberedTripId)) {
+      setSelectedTripId(rememberedTripId);
+    }
   }
 
   async function refreshCollaboration({ silent = false } = {}) {
-    if (!selectedTripId || isLocalPreview) {
+    if (!selectedTripId) {
       setCollaboration(EMPTY_COLLABORATION);
       return;
     }
@@ -526,21 +577,6 @@ function App() {
     }
   }
 
-  function startLocalPreview() {
-    setIsLocalPreview(true);
-    setAuthLoading(false);
-    setSession(null);
-    setSelectedTripId(null);
-    setTripLoaded(false);
-    setSyncStatus("preview");
-    showToast({ type: "info", message: "Local preview mode" });
-  }
-
-  function stopLocalPreview() {
-    setIsLocalPreview(false);
-    setSyncStatus("idle");
-  }
-
   async function createTrip(payload) {
     if (!session?.user) {
       return;
@@ -550,7 +586,7 @@ function App() {
     try {
       const nextTripId = await createTripFromPayload({ ...payload, dateRangeLabel: formatTripRange(deriveTripDays(payload.days)) }, session.user.id);
       await refreshTripSummaries({ silent: true });
-      setSelectedTripId(nextTripId);
+      selectTrip(nextTripId);
       showToast({ type: "success", message: "Trip created" });
     } catch (error) {
       setTripListStatus("error");
@@ -599,6 +635,14 @@ function App() {
       ...current,
       days: current.days.map((day) => (day.id === dayId ? updater(day) : day))
     }));
+  }
+
+  function suppressLocalRealtimeEcho() {
+    localRealtimeSuppressionUntilRef.current = Date.now() + LOCAL_REALTIME_ECHO_SUPPRESSION_MS;
+  }
+
+  function isLocalRealtimeEcho() {
+    return Date.now() < localRealtimeSuppressionUntilRef.current;
   }
 
   function dismissToast(toastId) {
@@ -704,6 +748,11 @@ function App() {
     }
 
     const isExistingActivity = Boolean(targetDay?.schedule.some((scheduleItem) => scheduleItem.id === item.id));
+    const nextDuration = Math.max(MIN_SCHEDULE_DURATION_MINUTES, Number(item.duration) || DEFAULT_NEW_BLOCK.duration);
+    if (!isScheduleSlotAvailable(targetDay.schedule, item.id, item.start, nextDuration)) {
+      showToast({ type: "error", message: "That time overlaps another activity or sits outside the timeline." });
+      return;
+    }
 
     setTrip((current) => {
       const targetDay = current.days.find((day) => day.id === dayId);
@@ -716,7 +765,7 @@ function App() {
         ...item,
         title: item.title.trim() || "Untitled plan",
         city: item.city.trim() || targetDay.city,
-        duration: Number(item.duration) || 60
+        duration: nextDuration
       };
 
       return {
@@ -796,18 +845,63 @@ function App() {
     });
   }
 
+  function resizeScheduleItem(dayId, itemId, nextStart, nextDuration) {
+    setTrip((current) => {
+      const targetDay = current.days.find((day) => day.id === dayId);
+      const targetItem = targetDay?.schedule.find((item) => item.id === itemId);
+      if (!targetDay || !targetItem || !nextStart) {
+        return current;
+      }
+
+      const duration = Math.max(MIN_SCHEDULE_DURATION_MINUTES, Number(nextDuration) || MIN_SCHEDULE_DURATION_MINUTES);
+      if (!isScheduleSlotAvailable(targetDay.schedule, itemId, nextStart, duration)) {
+        return current;
+      }
+
+      const resizedItem = {
+        ...targetItem,
+        start: nextStart,
+        duration
+      };
+
+      return {
+        ...current,
+        days: current.days.map((day) => {
+          if (day.id !== dayId) {
+            return day;
+          }
+
+          return {
+            ...day,
+            schedule: day.schedule.map((item) => (item.id === itemId ? resizedItem : item))
+          };
+        })
+      };
+    });
+  }
+
   function openNewScheduleModal() {
-    if (!selectedDay) {
+    const fallbackDay = selectedDay ?? sortedDays[0];
+    if (!fallbackDay) {
       return;
     }
+    openNewScheduleModalForDay(fallbackDay.id);
+  }
+
+  function openNewScheduleModalForDay(dayId, startTime) {
+    const targetDay = sortedDays.find((day) => day.id === dayId) ?? selectedDay ?? sortedDays[0];
+    if (!targetDay) {
+      return;
+    }
+
     setEditingSchedule({
       mode: "new",
-      dayId: selectedDay.id,
+      dayId: targetDay.id,
       item: {
         ...DEFAULT_NEW_BLOCK,
         id: `sched-${Date.now()}`,
-        city: selectedDay.city,
-        start: suggestNextStart(selectedDay.schedule)
+        city: targetDay.city,
+        start: startTime ?? suggestNextStart(targetDay.schedule)
       }
     });
   }
@@ -834,6 +928,8 @@ function App() {
           title: newIdea.title.trim(),
           city: newIdea.city.trim(),
           notes: newIdea.notes.trim(),
+          link: newIdea.link?.trim() ?? "",
+          mapLink: newIdea.mapLink?.trim() ?? "",
           votes: Object.fromEntries(current.travelers.map((name) => [name, ""]))
         },
         ...current.ideas
@@ -848,7 +944,15 @@ function App() {
       ...current,
       ideas: current.ideas.map((currentIdea) =>
         currentIdea.id === idea.id
-          ? { ...idea, title: idea.title.trim() || "Untitled idea", notes: idea.notes?.trim() ?? "" }
+          ? {
+              ...idea,
+              title: idea.title.trim() || "Untitled idea",
+              city: idea.city?.trim() ?? "",
+              notes: idea.notes?.trim() ?? "",
+              cost: idea.cost?.trim() ?? "",
+              link: idea.link?.trim() ?? "",
+              mapLink: idea.mapLink?.trim() ?? ""
+            }
           : currentIdea
       )
     }));
@@ -864,7 +968,7 @@ function App() {
   }
 
   function cycleVote(ideaId, traveler) {
-    if (!isLocalPreview && selectedTripId && (!currentTravelerName || traveler !== currentTravelerName)) {
+    if (!currentTravelerName || traveler !== currentTravelerName) {
       return;
     }
 
@@ -971,15 +1075,15 @@ function App() {
     showToast({ type: "success", message: "Planner reset" });
   }
 
-  if (!isSupabaseConfigured && !isLocalPreview) {
+  if (!isSupabaseConfigured) {
     return <ConfigState title="Supabase needs environment variables" message="Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then restart the Vite dev server." />;
   }
 
-  if (!isLocalPreview && authLoading) {
+  if (authLoading) {
     return <ConfigState title="Checking session" message="Restoring your Supabase session..." />;
   }
 
-  if (!isLocalPreview && !session) {
+  if (!session) {
     return (
       <AuthScreen
         email={authEmail}
@@ -987,17 +1091,15 @@ function App() {
         hasInvite={Boolean(inviteToken)}
         onEmailChange={setAuthEmail}
         onSubmit={handleMagicLinkSubmit}
-        canPreview={IS_DEV_LOCAL_PREVIEW}
-        onPreview={startLocalPreview}
       />
     );
   }
 
-  if (!isLocalPreview && session && inviteToken && inviteAcceptStatus === "loading") {
+  if (session && inviteToken && inviteAcceptStatus === "loading") {
     return <ConfigState title="Accepting invite" message="Linking this trip to your account..." />;
   }
 
-  if (!isLocalPreview && !selectedTripId) {
+  if (!selectedTripId) {
     return (
       <TripPicker
         email={session.user.email}
@@ -1005,7 +1107,7 @@ function App() {
         status={tripListStatus}
         pickerFileInputRef={pickerFileInputRef}
         onRefresh={() => refreshTripSummaries()}
-        onSelect={setSelectedTripId}
+        onSelect={selectTrip}
         onCreateStarter={createStarterTrip}
         onImportLocal={importLocalPlanner}
         onImportFile={handlePickerImportFile}
@@ -1014,7 +1116,7 @@ function App() {
     );
   }
 
-  if (!isLocalPreview && tripLoading && !tripLoaded) {
+  if (tripLoading && !tripLoaded) {
     return <ConfigState title="Loading trip" message="Pulling the latest planner from Supabase..." />;
   }
 
@@ -1022,7 +1124,7 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-block">
-          <img className="title-flag" src="./assets/japan-flag-title.png" alt="" aria-hidden="true" />
+          <img className="title-flag" src={FLAG_ASSET} alt="" aria-hidden="true" />
           <div className="trip-name-wrap">
             <input
               className="trip-title-input"
@@ -1037,36 +1139,25 @@ function App() {
         <ViewSwitcher activeView={activeView} ideasCount={trip.ideas.length} onChange={setActiveView} />
 
         <div className="topbar-actions">
-          {!isLocalPreview ? (
-            <select className="trip-select" value={selectedTripId ?? ""} onChange={(event) => setSelectedTripId(Number(event.target.value))} aria-label="Switch trip">
-              {tripSummaries.map((summary) => (
-                <option key={summary.id} value={summary.id}>
-                  {summary.name}
-                </option>
-              ))}
-            </select>
-          ) : null}
-          <span className={`sync-badge is-${isLocalPreview ? "preview" : syncStatus}`}>{isLocalPreview ? "Local preview" : formatSyncStatus(syncStatus)}</span>
-          {!isLocalPreview && selectedTripId ? (
-            <button className="ghost-button" type="button" onClick={() => setIsSharingOpen(true)}>
-              <Users size={17} />
-              People
-              <span className="people-count-badge">{peopleCount}</span>
-            </button>
-          ) : null}
-          <button className="ghost-button" type="button" onClick={exportTrip}>
-            <Download size={17} />
-            Export
+          <button className="icon-button" type="button" aria-label="Choose another trip" title="Choose another trip" onClick={openTripPicker}>
+            <CalendarDays size={18} />
           </button>
-          <button className="ghost-button" type="button" onClick={() => fileInputRef.current?.click()}>
+          <span className={`sync-badge is-${syncStatus}`}>{formatSyncStatus(syncStatus)}</span>
+          <button className="icon-button" type="button" aria-label={`People, ${peopleCount}`} title="People" onClick={() => setIsSharingOpen(true)}>
+            <Users size={17} />
+            <span className="people-count-badge" aria-hidden="true">{peopleCount}</span>
+          </button>
+          <button className="icon-button" type="button" aria-label="Export trip" title="Export" onClick={exportTrip}>
+            <Download size={17} />
+          </button>
+          <button className="icon-button" type="button" aria-label="Import trip" title="Import" onClick={() => fileInputRef.current?.click()}>
             <FileUp size={17} />
-            Import
           </button>
           <input ref={fileInputRef} className="file-input" type="file" accept="application/json" onChange={handleImportFile} />
-          <button className="icon-button" type="button" aria-label="Reset planner" onClick={resetPlanner}>
+          <button className="icon-button" type="button" aria-label="Reset planner" title="Reset planner" onClick={resetPlanner}>
             <RefreshCcw size={18} />
           </button>
-          <button className="icon-button" type="button" aria-label={isLocalPreview ? "Back to sign in" : "Sign out"} onClick={isLocalPreview ? stopLocalPreview : handleSignOut}>
+          <button className="icon-button" type="button" aria-label="Sign out" title="Sign out" onClick={handleSignOut}>
             <LogOut size={18} />
           </button>
         </div>
@@ -1075,77 +1166,72 @@ function App() {
       <ToastRegion toasts={toasts} onDismiss={dismissToast} />
 
       <main className={`planner-grid is-${activeView}-view ${activeView === "day" && isDateRailCollapsed ? "is-rail-collapsed" : ""}`}>
-        {activeView === "day" ? (
-          <DateRail
-            days={sortedDays}
-            selectedDayId={selectedDay?.id}
-            isCollapsed={isDateRailCollapsed}
-            onToggleCollapsed={() => setIsDateRailCollapsed((isCollapsed) => !isCollapsed)}
-            onSelect={(dayId) => {
-              setSelectedDayId(dayId);
-              setActiveView("day");
-            }}
-            onAddDay={addTripDay}
-          />
-        ) : null}
+        <DateRail
+          days={sortedDays}
+          hidden={activeView !== "day"}
+          selectedDayId={selectedDay?.id}
+          isCollapsed={isDateRailCollapsed}
+          onToggleCollapsed={() => setIsDateRailCollapsed((isCollapsed) => !isCollapsed)}
+          onSelect={(dayId) => {
+            setSelectedDayId(dayId);
+            setActiveView("day");
+          }}
+          onAddDay={addTripDay}
+        />
 
-        {activeView === "day" ? (
-          <DayTimeline
-            day={selectedDay}
-            sortedSchedule={sortedSchedule}
-            stats={dayStats}
-            mode={dayViewMode}
-            ideasCount={trip.ideas.length}
-            onAdd={openNewScheduleModal}
-            onEdit={(item) => setEditingSchedule({ mode: "edit", dayId: selectedDay.id, item })}
-            onScheduleMove={moveScheduleItem}
-            onDayChange={(updater) => updateDay(selectedDay.id, updater)}
-            onEditDay={() => setEditingDay(selectedDay)}
-            onOpenIdeas={() => setActiveView("ideas")}
-            onAutoArrange={autoArrangeSelectedDay}
-            onModeChange={setDayViewMode}
-          />
-        ) : null}
+        <DayTimeline
+          day={selectedDay}
+          hidden={activeView !== "day"}
+          sortedSchedule={sortedSchedule}
+          stats={dayStats}
+          mode={dayViewMode}
+          ideasCount={trip.ideas.length}
+          onAdd={openNewScheduleModal}
+          onEdit={(item) => setEditingSchedule({ mode: "edit", dayId: selectedDay.id, item })}
+          onScheduleMove={moveScheduleItem}
+          onScheduleResize={resizeScheduleItem}
+          onDayChange={(updater) => updateDay(selectedDay.id, updater)}
+          onEditDay={() => setEditingDay(selectedDay)}
+          onOpenIdeas={() => setActiveView("ideas")}
+          onAutoArrange={autoArrangeSelectedDay}
+          onModeChange={setDayViewMode}
+        />
 
-        {activeView === "trip" ? (
-          <AllTripBoard
-            days={sortedDays}
-            mode={tripBoardMode}
-            dateRangeLabel={dateRangeLabel}
-            ideasCount={trip.ideas.length}
-            onModeChange={setTripBoardMode}
-            onOpenIdeas={() => setActiveView("ideas")}
-            onOpenDay={(dayId) => {
-              setSelectedDayId(dayId);
-              setActiveView("day");
-            }}
-            onScheduleMove={moveScheduleItem}
-            onEditSchedule={(dayId, item) => setEditingSchedule({ mode: "edit", dayId, item })}
-            onEditDay={(day) => setEditingDay(day)}
-          />
-        ) : null}
+        <AllTripBoard
+          days={sortedDays}
+          hidden={activeView !== "trip"}
+          mode={tripBoardMode}
+          dateRangeLabel={dateRangeLabel}
+          onModeChange={setTripBoardMode}
+          onOpenDay={(dayId) => {
+            setSelectedDayId(dayId);
+            setActiveView("day");
+          }}
+          onScheduleMove={moveScheduleItem}
+          onScheduleResize={resizeScheduleItem}
+          onAddScheduleAt={openNewScheduleModalForDay}
+          onEditSchedule={(dayId, item) => setEditingSchedule({ mode: "edit", dayId, item })}
+          onEditDay={(day) => setEditingDay(day)}
+        />
 
-        {activeView === "ideas" ? (
-          <IdeasSection
-            ideas={filteredIdeas}
-            allIdeas={trip.ideas}
-            travelers={trip.travelers}
-            currentTravelerName={currentTravelerName}
-            canVoteAllTravelers={isLocalPreview || !selectedTripId}
-            isLocalPreview={isLocalPreview}
-            ideaTab={ideaTab}
-            categoryFilter={categoryFilter}
-            newIdea={newIdea}
-            onTabChange={setIdeaTab}
-            onCategoryChange={setCategoryFilter}
-            onNewIdeaChange={setNewIdea}
-            onAddIdea={addIdea}
-            onEditIdea={setEditingIdea}
-            onDeleteIdea={deleteIdea}
-            onVote={cycleVote}
-            onPromote={openIdeaPromotion}
-          />
-        ) : null}
+        <IdeasSection
+          ideas={filteredIdeas}
+          allIdeas={trip.ideas}
+          hidden={activeView !== "ideas"}
+          travelers={trip.travelers}
+          currentTravelerName={currentTravelerName}
+          ideaTab={ideaTab}
+          categoryFilter={categoryFilter}
+          newIdea={newIdea}
+          onTabChange={setIdeaTab}
+          onCategoryChange={setCategoryFilter}
+          onNewIdeaChange={setNewIdea}
+          onAddIdea={addIdea}
+          onEditIdea={setEditingIdea}
+          onDeleteIdea={deleteIdea}
+          onVote={cycleVote}
+          onPromote={openIdeaPromotion}
+        />
       </main>
 
       <TravelStrip />
@@ -1236,12 +1322,12 @@ function App() {
   );
 }
 
-function AuthScreen({ email, message, hasInvite, canPreview, onEmailChange, onSubmit, onPreview }) {
+function AuthScreen({ email, message, hasInvite, onEmailChange, onSubmit }) {
   return (
     <main className="auth-shell auth-landing-shell">
       <section className="auth-landing" aria-labelledby="auth-title">
         <div className="auth-landing-brand">
-          <img className="title-flag" src="./assets/japan-flag-title.png" alt="" aria-hidden="true" />
+          <img className="title-flag" src={FLAG_ASSET} alt="" aria-hidden="true" />
           <strong>Japan 2026</strong>
         </div>
 
@@ -1254,7 +1340,7 @@ function AuthScreen({ email, message, hasInvite, canPreview, onEmailChange, onSu
           <div className="auth-preview-card" aria-hidden="true">
             <div className="auth-preview-top">
               <span>
-                <img src="./assets/japan-flag-title.png" alt="" />
+                <img src={FLAG_ASSET} alt="" />
                 Japan 2026
               </span>
               <strong>Synced</strong>
@@ -1269,7 +1355,7 @@ function AuthScreen({ email, message, hasInvite, canPreview, onEmailChange, onSu
                 <span className="auth-preview-day" key={date}>
                   <small>{date}</small>
                   <strong>{city}</strong>
-                  <img src={`./assets/icons/${icon}`} alt="" />
+                  <img src={`${ICON_BASE}${icon}`} alt="" />
                 </span>
               ))}
               <span className="auth-preview-add">+</span>
@@ -1277,7 +1363,7 @@ function AuthScreen({ email, message, hasInvite, canPreview, onEmailChange, onSu
             <div className="auth-preview-tags">
               {["tag-food.png", "tag-culture.png", "tag-transit.png", "tag-hotel.png", "tag-shopping.png", "tag-open-time.png", "tag-map-pin.png"].map((icon) => (
                 <span key={icon}>
-                  <img src={`./assets/icons/${icon}`} alt="" />
+                  <img src={`${ICON_BASE}${icon}`} alt="" />
                 </span>
               ))}
             </div>
@@ -1285,17 +1371,17 @@ function AuthScreen({ email, message, hasInvite, canPreview, onEmailChange, onSu
 
           <div className="auth-benefits" aria-label="Planner benefits">
             <span>
-              <img src="./assets/icons/tag-favorite.png" alt="" aria-hidden="true" />
+              <img src={`${ICON_BASE}tag-favorite.png`} alt="" aria-hidden="true" />
               <strong>Plan together</strong>
               <small>Share ideas and votes.</small>
             </span>
             <span>
-              <img src="./assets/icons/tag-flexible.png" alt="" aria-hidden="true" />
+              <img src={`${ICON_BASE}tag-flexible.png`} alt="" aria-hidden="true" />
               <strong>Always in sync</strong>
               <small>Changes follow the trip.</small>
             </span>
             <span>
-              <img src="./assets/icons/tag-booked.png" alt="" aria-hidden="true" />
+              <img src={`${ICON_BASE}tag-booked.png`} alt="" aria-hidden="true" />
               <strong>Private & secure</strong>
               <small>Your planner stays yours.</small>
             </span>
@@ -1318,18 +1404,10 @@ function AuthScreen({ email, message, hasInvite, canPreview, onEmailChange, onSu
               Send magic link
             </button>
           </form>
-          {canPreview ? (
-            <>
-              <div className="auth-divider"><span>or</span></div>
-              <button className="ghost-button full-width" type="button" onClick={onPreview}>
-                Open local preview
-              </button>
-            </>
-          ) : null}
           {message ? <p className="auth-message">{message}</p> : null}
         </aside>
       </section>
-      <img className="auth-footer-strip" src="./assets/japan-footer-strip.png" alt="" aria-hidden="true" />
+      <img className="auth-footer-strip" src={FOOTER_STRIP_ASSET} alt="" aria-hidden="true" />
     </main>
   );
 }
@@ -1353,7 +1431,7 @@ function TripPicker({
       <section className="trip-picker" aria-labelledby="trip-picker-title">
         <header className="trip-picker-header">
           <div className="auth-brand">
-            <img className="title-flag" src="./assets/japan-flag-title.png" alt="" aria-hidden="true" />
+            <img className="title-flag" src={FLAG_ASSET} alt="" aria-hidden="true" />
             <div>
               <p>{email}</p>
               <h1 id="trip-picker-title">Choose a trip</h1>
@@ -1407,7 +1485,7 @@ function ConfigState({ title, message }) {
     <main className="auth-shell">
       <section className="auth-panel" aria-labelledby="config-title">
         <div className="auth-brand">
-          <img className="title-flag" src="./assets/japan-flag-title.png" alt="" aria-hidden="true" />
+          <img className="title-flag" src={FLAG_ASSET} alt="" aria-hidden="true" />
           <div>
             <p>Japan 2026</p>
             <h1 id="config-title">{title}</h1>
@@ -1464,9 +1542,9 @@ function ViewSwitcher({ activeView, ideasCount, onChange }) {
   );
 }
 
-function DateRail({ days, selectedDayId, isCollapsed, onToggleCollapsed, onSelect, onAddDay }) {
+function DateRail({ days, hidden = false, selectedDayId, isCollapsed, onToggleCollapsed, onSelect, onAddDay }) {
   return (
-    <aside className={`date-rail ${isCollapsed ? "is-collapsed" : ""}`} aria-label="Itinerary days">
+    <aside className={`date-rail ${isCollapsed ? "is-collapsed" : ""}`} aria-label="Itinerary days" hidden={hidden}>
       <div className="rail-heading">
         <CalendarDays size={18} />
         <span>Itinerary</span>
@@ -1510,8 +1588,9 @@ function DateRail({ days, selectedDayId, isCollapsed, onToggleCollapsed, onSelec
   );
 }
 
-function useScheduleDrag({ days, onScheduleMove, rowHeight = DAY_TIME_GRID_ROW_HEIGHT }) {
+function useScheduleDrag({ days, onScheduleMove, onScheduleResize, rowHeight = DAY_TIME_GRID_ROW_HEIGHT }) {
   const [draggedItemId, setDraggedItemId] = useState(null);
+  const [resizingItemId, setResizingItemId] = useState(null);
   const [dropPreview, setDropPreview] = useState(null);
   const pointerDragRef = useRef(null);
   const suppressClickRef = useRef(false);
@@ -1519,10 +1598,19 @@ function useScheduleDrag({ days, onScheduleMove, rowHeight = DAY_TIME_GRID_ROW_H
 
   function clearDragState() {
     setDraggedItemId(null);
+    setResizingItemId(null);
     setDropPreview(null);
   }
 
-  function readDropPreview(event, dragState) {
+  function readInteractionPreview(event, dragState) {
+    if (dragState.mode === "resize-start" || dragState.mode === "resize-end") {
+      return readResizePreview(event, dragState);
+    }
+
+    return readMovePreview(event, dragState);
+  }
+
+  function readMovePreview(event, dragState) {
     const column = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-drop-day-id]");
     const targetDayId = column?.dataset.dropDayId;
     const sourceDay = daysById.get(dragState.sourceDayId);
@@ -1539,7 +1627,43 @@ function useScheduleDrag({ days, onScheduleMove, rowHeight = DAY_TIME_GRID_ROW_H
       ...layout,
       dayId: targetDay.id,
       start,
+      duration,
       isAvailable: isScheduleSlotAvailable(targetDay.schedule, item.id, start, duration)
+    };
+  }
+
+  function readResizePreview(event, dragState) {
+    const day = daysById.get(dragState.sourceDayId);
+    const item = day?.schedule.find((candidate) => candidate.id === dragState.itemId);
+    if (!day || !item) {
+      return null;
+    }
+
+    const deltaMinutes = getResizeDeltaMinutes(event.clientY, dragState.startY, rowHeight);
+    const originalStart = dragState.originalStartMinutes;
+    const originalEnd = originalStart + dragState.originalDuration;
+    let nextStart = originalStart;
+    let nextDuration = dragState.originalDuration;
+
+    if (dragState.mode === "resize-start") {
+      nextStart = Math.min(originalStart + deltaMinutes, originalEnd - MIN_SCHEDULE_DURATION_MINUTES);
+      nextDuration = originalEnd - nextStart;
+    } else {
+      const nextEnd = Math.max(originalEnd + deltaMinutes, originalStart + MIN_SCHEDULE_DURATION_MINUTES);
+      nextDuration = nextEnd - originalStart;
+    }
+
+    const start = minutesToTimeInput(nextStart);
+    const layout = getTimeGridBlockLayout(start, nextDuration, rowHeight);
+    const end = nextStart + nextDuration;
+    return {
+      ...layout,
+      dayId: day.id,
+      start,
+      duration: nextDuration,
+      mode: "resize",
+      label: `${formatTime(start)} - ${formatTime(minutesToTimeInput(end))}`,
+      isAvailable: isScheduleSlotAvailable(day.schedule, item.id, start, nextDuration)
     };
   }
 
@@ -1549,11 +1673,38 @@ function useScheduleDrag({ days, onScheduleMove, rowHeight = DAY_TIME_GRID_ROW_H
     }
 
     pointerDragRef.current = {
+      mode: "move",
       itemId: item.id,
       sourceDayId,
       startX: event.clientX,
       startY: event.clientY,
       pointerId: event.pointerId,
+      isDragging: false
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function handleResizePointerDown(event, item, sourceDayId, mode) {
+    if (event.button && event.button !== 0) {
+      return;
+    }
+
+    const originalStartMinutes = parseTimeToMinutes(item.start);
+    if (originalStartMinutes === null) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    pointerDragRef.current = {
+      mode,
+      itemId: item.id,
+      sourceDayId,
+      startX: event.clientX,
+      startY: event.clientY,
+      pointerId: event.pointerId,
+      originalStartMinutes,
+      originalDuration: Math.max(MIN_SCHEDULE_DURATION_MINUTES, Number(item.duration) || MIN_SCHEDULE_DURATION_MINUTES),
       isDragging: false
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -1572,8 +1723,12 @@ function useScheduleDrag({ days, onScheduleMove, rowHeight = DAY_TIME_GRID_ROW_H
 
     event.preventDefault();
     dragState.isDragging = true;
-    setDraggedItemId(dragState.itemId);
-    const nextPreview = readDropPreview(event, dragState);
+    if (dragState.mode === "move") {
+      setDraggedItemId(dragState.itemId);
+    } else {
+      setResizingItemId(dragState.itemId);
+    }
+    const nextPreview = readInteractionPreview(event, dragState);
     setDropPreview((current) => (areDropPreviewsEqual(current, nextPreview) ? current : nextPreview));
   }
 
@@ -1586,10 +1741,14 @@ function useScheduleDrag({ days, onScheduleMove, rowHeight = DAY_TIME_GRID_ROW_H
       return;
     }
 
-    const finalPreview = readDropPreview(event, dragState);
+    const finalPreview = readInteractionPreview(event, dragState);
     suppressClickRef.current = true;
     if (finalPreview?.isAvailable) {
-      onScheduleMove(dragState.sourceDayId, dragState.itemId, finalPreview.dayId, finalPreview.start);
+      if (dragState.mode === "move") {
+        onScheduleMove(dragState.sourceDayId, dragState.itemId, finalPreview.dayId, finalPreview.start);
+      } else {
+        onScheduleResize?.(dragState.sourceDayId, dragState.itemId, finalPreview.start, finalPreview.duration);
+      }
     }
 
     clearDragState();
@@ -1618,14 +1777,21 @@ function useScheduleDrag({ days, onScheduleMove, rowHeight = DAY_TIME_GRID_ROW_H
     return true;
   }
 
+  function hasRecentPointerInteraction() {
+    return Boolean(pointerDragRef.current || suppressClickRef.current);
+  }
+
   return {
     draggedItemId,
+    resizingItemId,
     getDropPreviewForDay,
     handlePointerDown,
+    handleResizePointerDown,
     handlePointerMove,
     handlePointerUp,
     handlePointerCancel,
-    shouldSuppressClick
+    shouldSuppressClick,
+    hasRecentPointerInteraction
   };
 }
 
@@ -1636,17 +1802,20 @@ function DropSlotIndicator({ preview }) {
 
   return (
     <div
-      className={`drop-slot-indicator ${preview.isAvailable ? "is-available" : "is-unavailable"}`}
+      className={`drop-slot-indicator ${preview.isAvailable ? "is-available" : "is-unavailable"} ${preview.mode === "resize" ? "is-resize-preview" : ""} ${
+        preview.mode === "add" ? "is-add-preview" : ""
+      }`}
       style={{ top: preview.top, height: preview.height }}
       aria-hidden="true"
     >
-      {preview.isAvailable ? formatTime(preview.start) : "Unavailable"}
+      {preview.isAvailable ? preview.label ?? formatTime(preview.start) : "Unavailable"}
     </div>
   );
 }
 
 function DayTimeline({
   day,
+  hidden = false,
   sortedSchedule,
   stats,
   mode,
@@ -1654,6 +1823,7 @@ function DayTimeline({
   onAdd,
   onEdit,
   onScheduleMove,
+  onScheduleResize,
   onDayChange,
   onEditDay,
   onOpenIdeas,
@@ -1668,6 +1838,7 @@ function DayTimeline({
   const dragScheduler = useScheduleDrag({
     days: day ? [day] : [],
     onScheduleMove,
+    onScheduleResize,
     rowHeight: DAY_TIME_GRID_ROW_HEIGHT
   });
 
@@ -1685,10 +1856,13 @@ function DayTimeline({
         compact={compact}
         draggable={!compact}
         isDragging={dragScheduler.draggedItemId === item.id}
+        isResizing={dragScheduler.resizingItemId === item.id}
         positioned={!compact}
         dragHandle={!compact}
+        resizeHandles={!compact}
         style={layout ? { top: layout.top, height: layout.height } : undefined}
         onPointerDown={compact ? undefined : (event) => dragScheduler.handlePointerDown(event, item, day.id)}
+        onResizePointerDown={compact ? undefined : (event, resizeMode) => dragScheduler.handleResizePointerDown(event, item, day.id, resizeMode)}
         onEdit={() => {
           if (dragScheduler.shouldSuppressClick()) {
             return;
@@ -1700,7 +1874,7 @@ function DayTimeline({
   }
 
   return (
-    <section className="timeline-panel" aria-label="Daily schedule">
+    <section className="timeline-panel" aria-label="Daily schedule" hidden={hidden}>
       <div className="timeline-header">
         <div>
           <div className="day-title-row">
@@ -1822,10 +1996,13 @@ function ScheduleEvent({
   compact = false,
   draggable = false,
   isDragging = false,
+  isResizing = false,
   positioned = false,
   dragHandle = false,
+  resizeHandles = false,
   style,
-  onPointerDown
+  onPointerDown,
+  onResizePointerDown
 }) {
   const config = getCategoryConfig(item.category);
   const Icon = config.icon;
@@ -1835,8 +2012,9 @@ function ScheduleEvent({
     <article
       className={`schedule-event category-${config.className} ${compact ? "is-compact" : ""} ${draggable ? "is-draggable" : ""} ${
         isDragging ? "is-dragging" : ""
-      } ${positioned ? "is-positioned" : ""} ${dragHandle ? "has-drag-handle" : ""} ${detail.description ? "has-description" : ""} ${
-        detail.showDetailStrip ? "has-detail-strip" : ""
+      } ${isResizing ? "is-resizing" : ""} ${positioned ? "is-positioned" : ""} ${dragHandle ? "has-drag-handle" : ""} ${
+        resizeHandles ? "has-resize-handles" : ""
+      } ${detail.description ? "has-description" : ""} ${detail.showDetailStrip ? "has-detail-strip" : ""
       }`}
       style={style}
       draggable={false}
@@ -1856,6 +2034,18 @@ function ScheduleEvent({
         >
           <GripVertical size={17} />
         </button>
+      ) : null}
+      {resizeHandles ? (
+        <span
+          className="resize-handle resize-handle-start"
+          aria-hidden="true"
+          title="Resize start time"
+          onPointerDown={(event) => onResizePointerDown?.(event, "resize-start")}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        />
       ) : null}
       <button className="event-main" type="button" onClick={onEdit}>
         <span className="event-time">{formatTime(item.start)}</span>
@@ -1893,11 +2083,35 @@ function ScheduleEvent({
       <button className="event-more" type="button" aria-label={`Edit ${item.title}`} onClick={onEdit}>
         <MoreVertical size={18} />
       </button>
+      {resizeHandles ? (
+        <span
+          className="resize-handle resize-handle-end"
+          aria-hidden="true"
+          title="Resize end time"
+          onPointerDown={(event) => onResizePointerDown?.(event, "resize-end")}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        />
+      ) : null}
     </article>
   );
 }
 
-function AllTripBoard({ days, mode, dateRangeLabel, ideasCount, onModeChange, onOpenIdeas, onOpenDay, onScheduleMove, onEditSchedule, onEditDay }) {
+function AllTripBoard({
+  days,
+  hidden = false,
+  mode,
+  dateRangeLabel,
+  onModeChange,
+  onOpenDay,
+  onScheduleMove,
+  onScheduleResize,
+  onAddScheduleAt,
+  onEditSchedule,
+  onEditDay
+}) {
   const totals = days.reduce(
     (summary, day) => {
       const stats = getDayStats(day);
@@ -1908,36 +2122,41 @@ function AllTripBoard({ days, mode, dateRangeLabel, ideasCount, onModeChange, on
     },
     { planned: 0, blocks: 0 }
   );
+  const displayMode = mode === "list" ? "list" : "calendar";
 
   return (
-    <section className="trip-board" aria-label="All Trip itinerary board">
+    <section className="trip-board" aria-label="All Trip itinerary board" hidden={hidden}>
       <div className="trip-board-header">
         <div>
           <h1>{dateRangeLabel}</h1>
           <p>{totals.blocks} activities • {formatDuration(totals.planned)}</p>
         </div>
         <div className="trip-board-actions">
-          <button className="ghost-button compact-action" type="button" onClick={onOpenIdeas}>
-            Ideas
-            <span className="count-badge">{ideasCount}</span>
+          <button className="ghost-button compact-action" type="button" onClick={() => onAddScheduleAt()}>
+            <Plus size={16} />
+            Add activity
           </button>
           <div className="mode-toggle" aria-label="All Trip display mode">
-            <button className={mode === "grid" ? "is-active" : ""} type="button" onClick={() => onModeChange("grid")}>
-              Grid
-            </button>
-            <button className={mode === "list" ? "is-active" : ""} type="button" onClick={() => onModeChange("list")}>
+            <button className={displayMode === "list" ? "is-active" : ""} type="button" onClick={() => onModeChange("list")}>
               List
             </button>
-            <button className={mode === "calendar" ? "is-active" : ""} type="button" onClick={() => onModeChange("calendar")}>
+            <button className={displayMode === "calendar" ? "is-active" : ""} type="button" onClick={() => onModeChange("calendar")}>
               Timeline
             </button>
           </div>
         </div>
       </div>
-      {mode === "calendar" ? (
-        <TripCalendarBoard days={days} onOpenDay={onOpenDay} onScheduleMove={onScheduleMove} onEditSchedule={onEditSchedule} />
+      {displayMode === "calendar" ? (
+        <TripCalendarBoard
+          days={days}
+          onOpenDay={onOpenDay}
+          onScheduleMove={onScheduleMove}
+          onScheduleResize={onScheduleResize}
+          onAddScheduleAt={onAddScheduleAt}
+          onEditSchedule={onEditSchedule}
+        />
       ) : (
-        <div className={mode === "grid" ? "trip-day-grid" : "trip-day-list"}>
+        <div className="trip-day-list">
           {days.map((day) => {
             const stats = getDayStats(day);
             const schedule = sortSchedule(day.schedule);
@@ -1983,15 +2202,127 @@ function AllTripBoard({ days, mode, dateRangeLabel, ideasCount, onModeChange, on
   );
 }
 
-function TripCalendarBoard({ days, onOpenDay, onScheduleMove, onEditSchedule }) {
+function TripCalendarBoard({ days, onOpenDay, onScheduleMove, onScheduleResize, onAddScheduleAt, onEditSchedule }) {
   const slots = buildTimeGridSlots();
+  const gridWrapRef = useRef(null);
   const [timelineScrollLeft, setTimelineScrollLeft] = useState(0);
-  const dragScheduler = useScheduleDrag({ days, onScheduleMove, rowHeight: TRIP_TIME_GRID_ROW_HEIGHT });
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+  const [addPreview, setAddPreview] = useState(null);
+  const addPointerRef = useRef(null);
+  const dragScheduler = useScheduleDrag({ days, onScheduleMove, onScheduleResize, rowHeight: TRIP_TIME_GRID_ROW_HEIGHT });
   const gridStyle = {
     "--day-count": days.length,
     "--slot-count": slots.length,
     "--time-row-height": `${TRIP_TIME_GRID_ROW_HEIGHT}px`
   };
+
+  useEffect(() => {
+    updateTimelineScrollState();
+
+    function handleResize() {
+      updateTimelineScrollState();
+    }
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [days.length]);
+
+  function updateTimelineScrollState(node = gridWrapRef.current) {
+    if (!node) {
+      setTimelineScrollLeft(0);
+      setCanScrollLeft(false);
+      setCanScrollRight(false);
+      return;
+    }
+
+    const maxScrollLeft = Math.max(0, node.scrollWidth - node.clientWidth);
+    const nextScrollLeft = Math.min(node.scrollLeft, maxScrollLeft);
+    setTimelineScrollLeft(nextScrollLeft);
+    setCanScrollLeft(nextScrollLeft > 4);
+    setCanScrollRight(maxScrollLeft - nextScrollLeft > 4);
+  }
+
+  function scrollTimeline(direction) {
+    const node = gridWrapRef.current;
+    if (!node) {
+      return;
+    }
+
+    const timeColumnWidth = node.querySelector(".trip-time-labels")?.getBoundingClientRect().width ?? 86;
+    const dayColumnWidth = node.querySelector(".trip-time-day-column")?.getBoundingClientRect().width ?? 200;
+    const scrollAmount = Math.max(dayColumnWidth, node.clientWidth - timeColumnWidth);
+    node.scrollBy({ left: direction * scrollAmount, behavior: "smooth" });
+  }
+
+  function readAddPreview(event, day) {
+    if (dragScheduler.hasRecentPointerInteraction() || event.target.closest(".trip-time-event")) {
+      return null;
+    }
+
+    const start = getCellStartFromPointer(event.clientY, event.currentTarget, TRIP_TIME_GRID_ROW_HEIGHT);
+    if (!isScheduleSlotAvailable(day.schedule, null, start, TIME_GRID_STEP_MINUTES)) {
+      return null;
+    }
+
+    return {
+      ...getTimeGridBlockLayout(start, TIME_GRID_STEP_MINUTES, TRIP_TIME_GRID_ROW_HEIGHT),
+      dayId: day.id,
+      start,
+      duration: TIME_GRID_STEP_MINUTES,
+      mode: "add",
+      label: `Add at ${formatTime(start)}`,
+      isAvailable: true
+    };
+  }
+
+  function handleAddPointerMove(event, day) {
+    const nextPreview = readAddPreview(event, day);
+    setAddPreview((current) => (areDropPreviewsEqual(current, nextPreview) ? current : nextPreview));
+  }
+
+  function handleAddPointerDown(event, day) {
+    if (event.button && event.button !== 0) {
+      return;
+    }
+
+    if (event.target.closest(".trip-time-event")) {
+      addPointerRef.current = null;
+      return;
+    }
+
+    addPointerRef.current = {
+      dayId: day.id,
+      startX: event.clientX,
+      startY: event.clientY
+    };
+  }
+
+  function handleAddClick(event, day) {
+    if (event.target.closest(".trip-time-event") || dragScheduler.hasRecentPointerInteraction()) {
+      return;
+    }
+
+    const pointerStart = addPointerRef.current;
+    addPointerRef.current = null;
+    const movement = pointerStart ? Math.abs(event.clientX - pointerStart.startX) + Math.abs(event.clientY - pointerStart.startY) : 0;
+    if (pointerStart?.dayId !== day.id || movement > 8) {
+      return;
+    }
+
+    const nextPreview = addPreview?.dayId === day.id ? addPreview : readAddPreview(event, day);
+    if (!nextPreview) {
+      setAddPreview(null);
+      return;
+    }
+
+    setAddPreview(null);
+    onAddScheduleAt(day.id, nextPreview.start);
+  }
+
+  function clearAddPreview(dayId) {
+    setAddPreview((current) => (current?.dayId === dayId ? null : current));
+  }
 
   return (
     <div
@@ -2024,8 +2355,18 @@ function TripCalendarBoard({ days, onOpenDay, onScheduleMove, onEditSchedule }) 
             ))}
           </div>
         </div>
+        {canScrollLeft ? (
+          <button className="trip-time-scroll-button trip-time-scroll-button-left" type="button" aria-label="Scroll to previous days" onClick={() => scrollTimeline(-1)}>
+            <ChevronLeft size={20} />
+          </button>
+        ) : null}
+        {canScrollRight ? (
+          <button className="trip-time-scroll-button trip-time-scroll-button-right" type="button" aria-label="Scroll to next days" onClick={() => scrollTimeline(1)}>
+            <ChevronRight size={20} />
+          </button>
+        ) : null}
       </div>
-      <div className="trip-time-grid-wrap" onScroll={(event) => setTimelineScrollLeft(event.currentTarget.scrollLeft)}>
+      <div className="trip-time-grid-wrap" ref={gridWrapRef} onScroll={(event) => updateTimelineScrollState(event.currentTarget)}>
         <div className="trip-time-grid trip-time-body-grid" style={gridStyle}>
           <div className="trip-time-labels">
             {slots.map((slot) => (
@@ -2040,8 +2381,14 @@ function TripCalendarBoard({ days, onOpenDay, onScheduleMove, onEditSchedule }) 
               key={day.id}
               columnIndex={index + 2}
               draggedItemId={dragScheduler.draggedItemId}
-              dropPreview={dragScheduler.getDropPreviewForDay(day.id)}
+              resizingItemId={dragScheduler.resizingItemId}
+              dropPreview={dragScheduler.getDropPreviewForDay(day.id) ?? (addPreview?.dayId === day.id ? addPreview : null)}
               onPointerDown={dragScheduler.handlePointerDown}
+              onResizePointerDown={dragScheduler.handleResizePointerDown}
+              onAddPointerMove={handleAddPointerMove}
+              onAddPointerDown={handleAddPointerDown}
+              onAddClick={handleAddClick}
+              onAddPointerLeave={clearAddPreview}
               onEditSchedule={onEditSchedule}
               shouldSuppressClick={dragScheduler.shouldSuppressClick}
             />
@@ -2052,11 +2399,33 @@ function TripCalendarBoard({ days, onOpenDay, onScheduleMove, onEditSchedule }) 
   );
 }
 
-function TripTimeDayColumn({ day, columnIndex, draggedItemId, dropPreview, onPointerDown, onEditSchedule, shouldSuppressClick }) {
+function TripTimeDayColumn({
+  day,
+  columnIndex,
+  draggedItemId,
+  resizingItemId,
+  dropPreview,
+  onPointerDown,
+  onResizePointerDown,
+  onAddPointerMove,
+  onAddPointerDown,
+  onAddClick,
+  onAddPointerLeave,
+  onEditSchedule,
+  shouldSuppressClick
+}) {
   const schedule = sortSchedule(day.schedule);
 
   return (
-    <div className={`trip-time-day-column trip-day-theme-${((day.dayNumber - 1) % 6) + 1}`} data-drop-day-id={day.id} style={{ gridColumn: columnIndex }}>
+    <div
+      className={`trip-time-day-column trip-day-theme-${((day.dayNumber - 1) % 6) + 1}`}
+      data-drop-day-id={day.id}
+      style={{ gridColumn: columnIndex }}
+      onPointerMove={(event) => onAddPointerMove(event, day)}
+      onPointerDown={(event) => onAddPointerDown(event, day)}
+      onPointerLeave={() => onAddPointerLeave(day.id)}
+      onClick={(event) => onAddClick(event, day)}
+    >
       <DropSlotIndicator preview={dropPreview} />
       {schedule.map((item) => {
         const config = getCategoryConfig(item.category);
@@ -2065,9 +2434,12 @@ function TripTimeDayColumn({ day, columnIndex, draggedItemId, dropPreview, onPoi
         const detail = getTripTimeEventDetail(item, day.city);
 
         return (
-          <button
-            className={`trip-time-event category-${config.className} ${layout.isClamped ? "is-clamped" : ""} ${draggedItemId === item.id ? "is-dragging" : ""}`}
-            type="button"
+          <article
+            className={`trip-time-event category-${config.className} ${layout.isClamped ? "is-clamped" : ""} ${draggedItemId === item.id ? "is-dragging" : ""} ${
+              resizingItemId === item.id ? "is-resizing" : ""
+            }`}
+            role="button"
+            tabIndex={0}
             style={{ top: layout.top, height: layout.height }}
             key={item.id}
             data-schedule-id={item.id}
@@ -2078,7 +2450,23 @@ function TripTimeDayColumn({ day, columnIndex, draggedItemId, dropPreview, onPoi
               }
               onEditSchedule(day.id, item);
             }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onEditSchedule(day.id, item);
+              }
+            }}
           >
+            <span
+              className="resize-handle resize-handle-start"
+              aria-hidden="true"
+              title="Resize start time"
+              onPointerDown={(event) => onResizePointerDown(event, item, day.id, "resize-start")}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            />
             <span className="trip-time-event-main">
               <span className="trip-time-event-time">{formatTime(item.start)}</span>
               <Icon size={15} />
@@ -2099,7 +2487,17 @@ function TripTimeDayColumn({ day, columnIndex, draggedItemId, dropPreview, onPoi
                 ))}
               </span>
             ) : null}
-          </button>
+            <span
+              className="resize-handle resize-handle-end"
+              aria-hidden="true"
+              title="Resize end time"
+              onPointerDown={(event) => onResizePointerDown(event, item, day.id, "resize-end")}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            />
+          </article>
         );
       })}
     </div>
@@ -2109,10 +2507,9 @@ function TripTimeDayColumn({ day, columnIndex, draggedItemId, dropPreview, onPoi
 function IdeasSection({
   ideas,
   allIdeas,
+  hidden = false,
   travelers,
   currentTravelerName,
-  canVoteAllTravelers,
-  isLocalPreview,
   ideaTab,
   categoryFilter,
   newIdea,
@@ -2126,7 +2523,7 @@ function IdeasSection({
   onPromote
 }) {
   return (
-    <section className="ideas-section" aria-label="Ideas and proposals">
+    <section className="ideas-section" aria-label="Ideas and proposals" hidden={hidden}>
       <div className="ideas-section-header">
         <div>
           <h1>Ideas</h1>
@@ -2176,6 +2573,13 @@ function IdeasSection({
             aria-label="New idea notes"
             onChange={(event) => onNewIdeaChange((current) => ({ ...current, notes: event.target.value }))}
           />
+          <input
+            type="url"
+            value={newIdea.mapLink ?? ""}
+            placeholder="Google Maps link"
+            aria-label="New idea Google Maps link"
+            onChange={(event) => onNewIdeaChange((current) => ({ ...current, mapLink: event.target.value }))}
+          />
           <button className="primary-button full-width" type="submit">
             <Plus size={17} />
             Add
@@ -2183,7 +2587,7 @@ function IdeasSection({
         </form>
 
         <div className="ideas-browser">
-          {!isLocalPreview && currentTravelerName ? (
+          {currentTravelerName ? (
             <div className="voting-identity-note">
               <Heart size={15} />
               Voting as <strong>{currentTravelerName}</strong>
@@ -2209,7 +2613,6 @@ function IdeasSection({
                 key={idea.id}
                 travelers={travelers}
                 currentTravelerName={currentTravelerName}
-                canVoteAllTravelers={canVoteAllTravelers}
                 onEdit={() => onEditIdea(idea)}
                 onDelete={() => onDeleteIdea(idea.id)}
                 onVote={(traveler) => onVote(idea.id, traveler)}
@@ -2240,7 +2643,7 @@ function IdeaFilters({ activeCategory, onChange }) {
   );
 }
 
-function IdeaRow({ idea, travelers, currentTravelerName, canVoteAllTravelers, onEdit, onDelete, onVote, onPromote }) {
+function IdeaRow({ idea, travelers, currentTravelerName, onEdit, onDelete, onVote, onPromote }) {
   const config = getCategoryConfig(idea.category);
 
   return (
@@ -2261,7 +2664,7 @@ function IdeaRow({ idea, travelers, currentTravelerName, canVoteAllTravelers, on
       <div className="idea-votes" aria-label={`${idea.title} traveler votes`}>
         {travelers.map((traveler) => {
           const vote = idea.votes?.[traveler] ?? "";
-          const isLinkedTraveler = canVoteAllTravelers || currentTravelerName === traveler;
+          const isLinkedTraveler = currentTravelerName === traveler;
           return (
             <button
               className={`vote-icon vote-${vote || "none"}`}
@@ -2516,10 +2919,26 @@ function PromoteIdeaModal({ promotion, days, onDayChange, onCancel, onContinue }
 function EditScheduleModal({ payload, onCancel, onSave, onDelete }) {
   const [draft, setDraft] = useState({ ...DEFAULT_NEW_BLOCK, ...payload.item });
   const [showCost, setShowCost] = useState(Boolean(payload.item.cost));
+  const hasExistingDetails = Boolean(
+    (payload.item.notes ?? "").trim() ||
+    (payload.item.mapLink ?? "").trim() ||
+    (payload.item.link ?? "").trim() ||
+    (payload.item.cost ?? "").trim()
+  );
+  const [isDetailsOpen, setIsDetailsOpen] = useState(hasExistingDetails);
+  const [isNotesOpen, setIsNotesOpen] = useState(Boolean((payload.item.notes ?? "").trim()));
   const mapPreview = getMapPreview(draft.mapLink);
+  const startMinutes = clampMinutes(parseTimeToMinutes(draft.start) ?? TIME_GRID_START_MINUTES, TIME_GRID_START_MINUTES, TIME_GRID_END_MINUTES - MIN_SCHEDULE_DURATION_MINUTES);
+  const durationMinutes = clampMinutes(Number(draft.duration) || DEFAULT_NEW_BLOCK.duration, MIN_SCHEDULE_DURATION_MINUTES, TIME_GRID_END_MINUTES - startMinutes);
 
   function updateDraft(changes) {
     setDraft((current) => ({ ...current, ...changes }));
+  }
+
+  function adjustDuration(deltaMinutes) {
+    const maxDuration = Math.max(MIN_SCHEDULE_DURATION_MINUTES, TIME_GRID_END_MINUTES - startMinutes);
+    const nextDuration = clampMinutes(durationMinutes + deltaMinutes, MIN_SCHEDULE_DURATION_MINUTES, maxDuration);
+    updateDraft({ duration: nextDuration });
   }
 
   function handleSave() {
@@ -2540,91 +2959,103 @@ function EditScheduleModal({ payload, onCancel, onSave, onDelete }) {
       <div className="dialog editor-dialog" role="dialog" aria-modal="true" aria-label={payload.mode === "new" ? "Add activity" : "Edit activity"}>
         <DialogHeader title={payload.mode === "new" ? "Add activity" : "Edit activity"} onClose={onCancel} />
         <div className="schedule-editor">
-          <section className="editor-section editor-section-main" aria-label="Plan details">
-            <p className="editor-section-title">Plan</p>
-            <label className="editor-field editor-field-title">
-              Title
-              <input value={draft.title} onChange={(event) => updateDraft({ title: event.target.value })} placeholder="Coffee, train, temple visit..." />
+          <label className="editor-field editor-field-title">
+            Title
+            <input value={draft.title} onChange={(event) => updateDraft({ title: event.target.value })} placeholder="Coffee, train, temple visit..." />
+          </label>
+          <div className="editor-core-grid">
+            <TimeSelectControl value={draft.start} onChange={(start) => updateDraft({ start })} />
+            <StepperControl
+              label="Duration"
+              value={formatDuration(durationMinutes)}
+              detail={`${durationMinutes} min`}
+              decreaseLabel="Decrease duration by 15 minutes"
+              increaseLabel="Increase duration by 15 minutes"
+              decreaseDisabled={durationMinutes <= MIN_SCHEDULE_DURATION_MINUTES}
+              increaseDisabled={durationMinutes >= Math.max(MIN_SCHEDULE_DURATION_MINUTES, TIME_GRID_END_MINUTES - startMinutes)}
+              onDecrease={() => adjustDuration(-RESIZE_STEP_MINUTES)}
+              onIncrease={() => adjustDuration(RESIZE_STEP_MINUTES)}
+            />
+            <label className="editor-field">
+              Category
+              <select value={draft.category} onChange={(event) => updateDraft({ category: event.target.value })}>
+                {CATEGORIES.map((category) => (
+                  <option key={category}>{category}</option>
+                ))}
+              </select>
             </label>
-            <div className="editor-field-grid">
-              <label className="editor-field">
-                Time
-                <input type="time" value={draft.start} onChange={(event) => updateDraft({ start: event.target.value })} />
-              </label>
-              <label className="editor-field">
-                Duration
-                <div className="duration-input">
-                  <input min="15" step="15" type="number" value={draft.duration} onChange={(event) => updateDraft({ duration: Number(event.target.value) })} />
-                  <span>min</span>
+            <label className="editor-field">
+              Area
+              <input value={draft.city} onChange={(event) => updateDraft({ city: event.target.value })} placeholder="Kyoto, Shibuya, hotel area..." />
+            </label>
+            <label className="editor-field">
+              Status
+              <select value={draft.status} onChange={(event) => updateDraft({ status: event.target.value })}>
+                {STATUSES.map((status) => (
+                  <option key={status}>{status}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className={`editor-details ${isDetailsOpen ? "is-open" : ""}`}>
+            <button className="editor-details-toggle" type="button" aria-expanded={isDetailsOpen} onClick={() => setIsDetailsOpen((isOpen) => !isOpen)}>
+              <span>
+                <strong>More details</strong>
+                <small>Notes, links, cost</small>
+              </span>
+              <span className="editor-details-indicator" aria-hidden="true">{isDetailsOpen ? "Hide" : "Show"}</span>
+            </button>
+            {isDetailsOpen ? (
+              <div className="editor-details-panel">
+                {isNotesOpen ? (
+                  <label className="editor-field editor-field-notes">
+                    Notes
+                    <textarea value={draft.notes ?? ""} onChange={(event) => updateDraft({ notes: event.target.value })} placeholder="Private planning notes, reservation details, reminders..." />
+                  </label>
+                ) : (
+                  <button className="ghost-button compact-action editor-add-notes" type="button" onClick={() => setIsNotesOpen(true)}>
+                    <Plus size={16} />
+                    Add notes
+                  </button>
+                )}
+                <div className="editor-links-grid">
+                  <label className="editor-field">
+                    Google Maps link
+                    <input type="url" value={draft.mapLink ?? ""} onChange={(event) => updateDraft({ mapLink: event.target.value })} placeholder="Paste a Google Maps place or directions link" />
+                  </label>
+                  <label className="editor-field">
+                    Website / booking link
+                    <input type="url" value={draft.link ?? ""} onChange={(event) => updateDraft({ link: event.target.value })} placeholder="Restaurant, hotel, ticket, or website link" />
+                  </label>
                 </div>
-              </label>
-              <label className="editor-field">
-                Category
-                <select value={draft.category} onChange={(event) => updateDraft({ category: event.target.value })}>
-                  {CATEGORIES.map((category) => (
-                    <option key={category}>{category}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="editor-field">
-                Location
-                <input value={draft.city} onChange={(event) => updateDraft({ city: event.target.value })} placeholder="Kyoto, Shibuya, hotel area..." />
-              </label>
-            </div>
-          </section>
-
-          <section className="editor-section" aria-label="Map and links">
-            <p className="editor-section-title">Map & Links</p>
-            <label className="editor-field">
-              Google Maps link
-              <input type="url" value={draft.mapLink ?? ""} onChange={(event) => updateDraft({ mapLink: event.target.value })} placeholder="Paste a Google Maps place or directions link" />
-            </label>
-            {mapPreview ? <MapPreview preview={mapPreview} /> : null}
-            <label className="editor-field">
-              Website / booking link
-              <input type="url" value={draft.link ?? ""} onChange={(event) => updateDraft({ link: event.target.value })} placeholder="Restaurant, hotel, ticket, or website link" />
-            </label>
-          </section>
-
-          <section className="editor-section editor-section-support" aria-label="Optional details">
-            <p className="editor-section-title">Details</p>
-            <div className="editor-field-grid">
-              <label className="editor-field">
-                Status
-                <select value={draft.status} onChange={(event) => updateDraft({ status: event.target.value })}>
-                  {STATUSES.map((status) => (
-                    <option key={status}>{status}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="cost-toggle">
-                <span>
-                  <strong>Add cost</strong>
-                  <small>Optional estimate</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={showCost}
-                  onChange={(event) => {
-                    setShowCost(event.target.checked);
-                    if (!event.target.checked) {
-                      updateDraft({ cost: "" });
-                    }
-                  }}
-                />
-              </label>
-              {showCost ? (
-                <label className="editor-field">
-                  Cost
-                  <input value={draft.cost ?? ""} onChange={(event) => updateDraft({ cost: event.target.value })} placeholder="$40, ¥5000, TBD..." />
-                </label>
-              ) : null}
-            </div>
-            <label className="editor-field">
-              Notes
-              <textarea value={draft.notes ?? ""} onChange={(event) => updateDraft({ notes: event.target.value })} placeholder="Private planning notes, reservation details, reminders..." />
-            </label>
-          </section>
+                {mapPreview ? <MapPreview preview={mapPreview} /> : null}
+                <div className="editor-cost-row">
+                  <label className="cost-toggle">
+                    <span>
+                      <strong>Add cost</strong>
+                      <small>Optional estimate</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={showCost}
+                      onChange={(event) => {
+                        setShowCost(event.target.checked);
+                        if (!event.target.checked) {
+                          updateDraft({ cost: "" });
+                        }
+                      }}
+                    />
+                  </label>
+                  {showCost ? (
+                    <label className="editor-field">
+                      Cost
+                      <input value={draft.cost ?? ""} onChange={(event) => updateDraft({ cost: event.target.value })} placeholder="$40, ¥5000, TBD..." />
+                    </label>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+          </div>
         </div>
         <div className="dialog-actions">
           {payload.mode === "edit" ? (
@@ -2645,28 +3076,95 @@ function EditScheduleModal({ payload, onCancel, onSave, onDelete }) {
   );
 }
 
+function TimeSelectControl({ value, onChange }) {
+  const parts = getTimeSelectParts(value);
+
+  function updatePart(changes) {
+    onChange(timePartsToInput({ ...parts, ...changes }));
+  }
+
+  return (
+    <div className="editor-time-select" role="group" aria-label="Time">
+      <span className="editor-control-label">Time</span>
+      <div className="time-select-shell">
+        <select className="time-hour-select" aria-label="Start hour" value={parts.hour} onChange={(event) => updatePart({ hour: event.target.value })}>
+          {TIME_PICKER_HOURS.map((hour) => (
+            <option key={hour} value={hour}>
+              {hour}
+            </option>
+          ))}
+        </select>
+        <select className="time-minute-select" aria-label="Start minutes" value={parts.minute} onChange={(event) => updatePart({ minute: event.target.value })}>
+          {TIME_PICKER_MINUTES.map((minute) => {
+            const minuteLabel = String(minute).padStart(2, "0");
+            return (
+              <option key={minuteLabel} value={minuteLabel}>
+                {minuteLabel}
+              </option>
+            );
+          })}
+        </select>
+        <select className="time-period-select" aria-label="Start period" value={parts.period} onChange={(event) => updatePart({ period: event.target.value })}>
+          {TIME_PICKER_PERIODS.map((period) => (
+            <option key={period} value={period}>
+              {period}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
+}
+
+function StepperControl({ label, value, detail, decreaseLabel, increaseLabel, decreaseDisabled, increaseDisabled, onDecrease, onIncrease }) {
+  return (
+    <div className="editor-stepper" role="group" aria-label={label}>
+      <span className="editor-control-label">{label}</span>
+      <div className="stepper-shell">
+        <button className="stepper-button" type="button" aria-label={decreaseLabel} title={decreaseLabel} disabled={decreaseDisabled} onClick={onDecrease}>
+          <Minus size={16} />
+        </button>
+        <span className="stepper-value" aria-live="polite">
+          <strong>{value}</strong>
+          <small>{detail}</small>
+        </span>
+        <button className="stepper-button" type="button" aria-label={increaseLabel} title={increaseLabel} disabled={increaseDisabled} onClick={onIncrease}>
+          <Plus size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function MapPreview({ preview }) {
   return (
-    <div className={`map-preview-card${preview.isInvalid ? " is-invalid" : ""}`}>
-      <div className="map-preview-thumb" aria-hidden="true">
-        <MapPin size={24} />
+    <div className={`map-preview-card${preview.isInvalid ? " is-invalid" : ""}${preview.embedSrc ? " has-embed" : ""}`}>
+      {preview.embedSrc ? (
+        <iframe className="map-preview-frame" src={preview.embedSrc} title="Google Maps preview" loading="lazy" referrerPolicy="no-referrer-when-downgrade" />
+      ) : (
+        <div className="map-preview-thumb" aria-hidden="true">
+          <MapPin size={24} />
+        </div>
+      )}
+      <div className="map-preview-meta">
+        <div className="map-preview-copy">
+          <strong>{preview.title}</strong>
+          <span>{preview.detail}</span>
+        </div>
+        {preview.href ? (
+          <a className="map-preview-link" href={preview.href} target="_blank" rel="noreferrer">
+            <ExternalLink size={15} />
+            Open
+          </a>
+        ) : null}
       </div>
-      <div className="map-preview-copy">
-        <strong>{preview.title}</strong>
-        <span>{preview.detail}</span>
-      </div>
-      {preview.href ? (
-        <a className="map-preview-link" href={preview.href} target="_blank" rel="noreferrer">
-          <ExternalLink size={15} />
-          Open
-        </a>
-      ) : null}
     </div>
   );
 }
 
 function EditIdeaModal({ idea, onCancel, onSave, onDelete }) {
   const [draft, setDraft] = useState(idea);
+  const mapPreview = getMapPreview(draft.mapLink);
 
   function updateDraft(changes) {
     setDraft((current) => ({ ...current, ...changes }));
@@ -2713,6 +3211,15 @@ function EditIdeaModal({ idea, onCancel, onSave, onDelete }) {
             Link
             <input value={draft.link ?? ""} onChange={(event) => updateDraft({ link: event.target.value })} />
           </label>
+          <label className="span-two">
+            Google Maps link
+            <input type="url" value={draft.mapLink ?? ""} onChange={(event) => updateDraft({ mapLink: event.target.value })} />
+          </label>
+          {mapPreview ? (
+            <div className="span-two">
+              <MapPreview preview={mapPreview} />
+            </div>
+          ) : null}
         </FormGrid>
         <div className="dialog-actions">
           <button className="ghost-button danger" type="button" onClick={onDelete}>
@@ -2802,11 +3309,13 @@ function getMapPreview(link) {
     const url = new URL(trimmedLink);
     const host = url.hostname.replace(/^www\./, "");
     const isGoogleMap = host.includes("google.") || host === "maps.app.goo.gl" || host.includes("goo.gl");
+    const embedSrc = isGoogleMap ? getGoogleMapsEmbedSrc(url) : "";
 
     return {
       href: url.href,
       title: isGoogleMap ? "Google Maps saved" : "Map link saved",
-      detail: isGoogleMap ? "Open the saved place or route when you need it." : host
+      detail: getMapPreviewDetail({ embedSrc, isGoogleMap, host }),
+      embedSrc
     };
   } catch {
     return {
@@ -2817,6 +3326,58 @@ function getMapPreview(link) {
   }
 }
 
+function getMapPreviewDetail({ embedSrc, isGoogleMap, host }) {
+  if (!isGoogleMap) {
+    return host;
+  }
+
+  if (!GOOGLE_MAPS_EMBED_KEY) {
+    return "Add VITE_GOOGLE_MAPS_EMBED_KEY to show an embedded preview.";
+  }
+
+  if (embedSrc) {
+    return "Embedded Google Maps preview.";
+  }
+
+  return "Open the saved place or route when you need it.";
+}
+
+function getGoogleMapsEmbedSrc(url) {
+  if (!GOOGLE_MAPS_EMBED_KEY) {
+    return "";
+  }
+
+  const query = getGoogleMapsEmbedQuery(url);
+  if (!query) {
+    return "";
+  }
+
+  const embedUrl = new URL("https://www.google.com/maps/embed/v1/place");
+  embedUrl.searchParams.set("key", GOOGLE_MAPS_EMBED_KEY);
+  embedUrl.searchParams.set("q", query);
+  return embedUrl.href;
+}
+
+function getGoogleMapsEmbedQuery(url) {
+  const queryParam = url.searchParams.get("query") || url.searchParams.get("q") || url.searchParams.get("destination");
+  if (queryParam) {
+    const placeId = url.searchParams.get("query_place_id") || url.searchParams.get("destination_place_id");
+    return placeId ? `place_id:${placeId}` : queryParam;
+  }
+
+  const placePathMatch = url.pathname.match(/\/maps\/place\/([^/@]+)/);
+  if (placePathMatch?.[1]) {
+    return decodeURIComponent(placePathMatch[1].replace(/\+/g, " "));
+  }
+
+  const coordinatesMatch = url.href.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),/) || url.href.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
+  if (coordinatesMatch) {
+    return `${coordinatesMatch[1]},${coordinatesMatch[2]}`;
+  }
+
+  return "";
+}
+
 function FormGrid({ children }) {
   return <div className="form-grid">{children}</div>;
 }
@@ -2824,7 +3385,7 @@ function FormGrid({ children }) {
 function TravelStrip() {
   return (
     <div className="travel-strip" aria-hidden="true">
-      <img src="./assets/japan-footer-strip.png" alt="" />
+      <img src={FOOTER_STRIP_ASSET} alt="" />
     </div>
   );
 }
@@ -2927,16 +3488,16 @@ function getTimeGridEventLayout(item, rowHeight = DAY_TIME_GRID_ROW_HEIGHT) {
 function getTimeGridBlockLayout(startTime, durationMinutes, rowHeight = DAY_TIME_GRID_ROW_HEIGHT) {
   const parsedStart = parseTimeToMinutes(startTime);
   const start = parsedStart ?? TIME_GRID_START_MINUTES;
-  const duration = Math.max(TIME_GRID_STEP_MINUTES, Number(durationMinutes) || TIME_GRID_STEP_MINUTES);
+  const duration = Math.max(MIN_SCHEDULE_DURATION_MINUTES, Number(durationMinutes) || MIN_SCHEDULE_DURATION_MINUTES);
   const end = start + duration;
-  const clampedStart = Math.min(Math.max(start, TIME_GRID_START_MINUTES), TIME_GRID_END_MINUTES - TIME_GRID_STEP_MINUTES);
-  const clampedEnd = Math.min(Math.max(end, clampedStart + TIME_GRID_STEP_MINUTES), TIME_GRID_END_MINUTES);
+  const clampedStart = Math.min(Math.max(start, TIME_GRID_START_MINUTES), TIME_GRID_END_MINUTES - MIN_SCHEDULE_DURATION_MINUTES);
+  const clampedEnd = Math.min(Math.max(end, clampedStart + MIN_SCHEDULE_DURATION_MINUTES), TIME_GRID_END_MINUTES);
   const rowStart = (clampedStart - TIME_GRID_START_MINUTES) / TIME_GRID_STEP_MINUTES;
-  const rowSpan = Math.max(1, (clampedEnd - clampedStart) / TIME_GRID_STEP_MINUTES);
+  const rowSpan = Math.max(MIN_SCHEDULE_DURATION_MINUTES / TIME_GRID_STEP_MINUTES, (clampedEnd - clampedStart) / TIME_GRID_STEP_MINUTES);
 
   return {
     top: `${rowStart * rowHeight}px`,
-    height: `${Math.max(rowHeight - 6, rowSpan * rowHeight - 6)}px`,
+    height: `${Math.max(18, rowSpan * rowHeight - 6)}px`,
     isClamped: start !== clampedStart || end !== clampedEnd
   };
 }
@@ -2974,7 +3535,7 @@ function getScheduleEventDetail(item, dayCity = "") {
   }
 
   if (shouldShowLocation) {
-    chips.push({ key: "location", label: itemCity, title: "Location", asset: TAG_ASSETS.meta.map });
+    chips.push({ key: "location", label: itemCity, title: "Area", asset: TAG_ASSETS.meta.map });
   }
 
   if (cost) {
@@ -3007,15 +3568,54 @@ function getDropStartFromPointer(clientY, column, rowHeight = DAY_TIME_GRID_ROW_
   return minutesToTimeInput(clampedMinutes);
 }
 
+function getCellStartFromPointer(clientY, column, rowHeight = DAY_TIME_GRID_ROW_HEIGHT) {
+  const rect = column.getBoundingClientRect();
+  const offsetY = Math.min(Math.max(clientY - rect.top, 0), Math.max(0, rect.height - 1));
+  const rawMinutes = TIME_GRID_START_MINUTES + (offsetY / rowHeight) * TIME_GRID_STEP_MINUTES;
+  const snappedMinutes = Math.floor(rawMinutes / TIME_GRID_STEP_MINUTES) * TIME_GRID_STEP_MINUTES;
+  const clampedMinutes = Math.min(Math.max(snappedMinutes, TIME_GRID_START_MINUTES), TIME_GRID_END_MINUTES - TIME_GRID_STEP_MINUTES);
+  return minutesToTimeInput(clampedMinutes);
+}
+
+function getResizeDeltaMinutes(clientY, startY, rowHeight = DAY_TIME_GRID_ROW_HEIGHT) {
+  const rawMinutes = ((clientY - startY) / rowHeight) * TIME_GRID_STEP_MINUTES;
+  return Math.round(rawMinutes / RESIZE_STEP_MINUTES) * RESIZE_STEP_MINUTES;
+}
+
 function minutesToTimeInput(totalMinutes) {
   const hours = String(Math.floor(totalMinutes / 60)).padStart(2, "0");
   const minutes = String(totalMinutes % 60).padStart(2, "0");
   return `${hours}:${minutes}`;
 }
 
+function clampMinutes(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function getTimeSelectParts(time) {
+  const parsedMinutes = parseTimeToMinutes(time) ?? TIME_GRID_START_MINUTES;
+  const snappedMinutes = clampMinutes(Math.round(parsedMinutes / RESIZE_STEP_MINUTES) * RESIZE_STEP_MINUTES, 0, (24 * 60) - RESIZE_STEP_MINUTES);
+  const hours24 = Math.floor(snappedMinutes / 60);
+  const minutes = snappedMinutes % 60;
+  return {
+    hour: String(hours24 % 12 || 12),
+    minute: String(minutes).padStart(2, "0"),
+    period: hours24 >= 12 ? "PM" : "AM"
+  };
+}
+
+function timePartsToInput({ hour, minute, period }) {
+  const selectedHour = Number(hour);
+  const selectedMinute = Number(minute);
+  const baseHour = Number.isFinite(selectedHour) ? selectedHour % 12 : 0;
+  const hours24 = period === "PM" ? baseHour + 12 : baseHour;
+  const safeMinutes = Number.isFinite(selectedMinute) ? selectedMinute : 0;
+  return minutesToTimeInput((hours24 * 60) + safeMinutes);
+}
+
 function isScheduleSlotAvailable(schedule, movingItemId, targetStart, durationMinutes) {
   const start = parseTimeToMinutes(targetStart);
-  const duration = Math.max(TIME_GRID_STEP_MINUTES, Number(durationMinutes) || TIME_GRID_STEP_MINUTES);
+  const duration = Math.max(MIN_SCHEDULE_DURATION_MINUTES, Number(durationMinutes) || MIN_SCHEDULE_DURATION_MINUTES);
   if (start === null) {
     return false;
   }
@@ -3042,7 +3642,7 @@ function areDropPreviewsEqual(first, second) {
   if (!first || !second) {
     return first === second;
   }
-  return first.dayId === second.dayId && first.start === second.start && first.isAvailable === second.isAvailable;
+  return first.dayId === second.dayId && first.start === second.start && first.duration === second.duration && first.isAvailable === second.isAvailable;
 }
 
 function parseTimeToMinutes(time) {
@@ -3103,6 +3703,37 @@ function clearSearchParam(name) {
   const url = new URL(window.location.href);
   url.searchParams.delete(name);
   window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+function rememberSelectedTrip(profileId, tripId) {
+  if (typeof window === "undefined" || !profileId || !tripId) {
+    return;
+  }
+
+  try {
+    const rememberedTrips = readRememberedTrips();
+    rememberedTrips[profileId] = tripId;
+    window.localStorage.setItem(LAST_SELECTED_TRIP_KEY, JSON.stringify(rememberedTrips));
+  } catch {
+    // Remembering the last trip is a convenience; auth and trip loading still work without it.
+  }
+}
+
+function readRememberedTripId(profileId) {
+  if (typeof window === "undefined" || !profileId) {
+    return null;
+  }
+
+  const tripId = Number(readRememberedTrips()[profileId]);
+  return Number.isFinite(tripId) && tripId > 0 ? tripId : null;
+}
+
+function readRememberedTrips() {
+  try {
+    return JSON.parse(window.localStorage.getItem(LAST_SELECTED_TRIP_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
 }
 
 function formatShortDate(dateValue) {
