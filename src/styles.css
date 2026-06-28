@@ -3493,6 +3493,16 @@ textarea:focus {
   border-style: dashed;
 }
 
+.route-idea-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.route-idea-chip:disabled span,
+.route-idea-chip:disabled small {
+  color: var(--muted);
+}
+
 .route-result,
 .route-recommendations,
 .route-warning-list {

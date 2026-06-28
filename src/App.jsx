@@ -300,6 +300,26 @@ function App() {
   );
 
   useEffect(() => {
+    if (!selectedDay?.id) {
+      return;
+    }
+
+    setRoutePlanner((current) => {
+      if (current.dayId === selectedDay.id) {
+        return current;
+      }
+
+      return {
+        ...current,
+        dayId: selectedDay.id,
+        selectedIdeaIds: [],
+        status: "idle",
+        result: null
+      };
+    });
+  }, [selectedDay?.id]);
+
+  useEffect(() => {
     if (!selectedDay && sortedDays[0]) {
       setSelectedDayId(sortedDays[0].id);
     }
@@ -2122,8 +2142,22 @@ function RoutePlannerPanel({ day, ideas, planner, onPlannerChange, onPlanRoute, 
   const routeIdeas = ideas.filter((idea) => idea.status !== "Skipped");
   const selectedIdeaSet = new Set(planner.selectedIdeaIds);
   const result = planner.result;
+  const hasResolvedBase = hasPlaceCoordinates(day.basePlace);
+  const selectedResolvedCount = routeIdeas.filter((idea) => selectedIdeaSet.has(idea.id) && hasPlaceCoordinates(idea.place)).length;
+  const scheduledResolvedCount = (day.schedule ?? []).filter((item) => hasPlaceCoordinates(item.place)).length;
+  const canMakeRoute = planner.status !== "loading" && hasResolvedBase && (selectedResolvedCount > 0 || scheduledResolvedCount > 0);
+  const routeButtonTitle = !hasResolvedBase
+    ? "Resolve a base or hotel place for this day first."
+    : selectedResolvedCount === 0 && scheduledResolvedCount === 0
+      ? "Resolve at least one activity or idea place first."
+      : "Make a route for this day.";
 
   function toggleIdea(ideaId) {
+    const idea = routeIdeas.find((candidate) => candidate.id === ideaId);
+    if (!hasPlaceCoordinates(idea?.place)) {
+      return;
+    }
+
     onPlannerChange((current) => {
       const selected = new Set(current.selectedIdeaIds);
       if (selected.has(ideaId)) {
@@ -2140,7 +2174,7 @@ function RoutePlannerPanel({ day, ideas, planner, onPlannerChange, onPlanRoute, 
       <div className="route-planner-header">
         <div>
           <strong>Route planner</strong>
-          <small>{day.basePlace?.name || day.baseMapLink ? "Base ready" : "Resolve a day base in Edit Day first"}</small>
+          <small>{hasResolvedBase ? `Base ready: ${day.basePlace.name || "saved place"}` : "Resolve a day base in Edit Day first"}</small>
         </div>
         <div className="route-planner-controls">
           <select
@@ -2160,7 +2194,7 @@ function RoutePlannerPanel({ day, ideas, planner, onPlannerChange, onPlanRoute, 
             />
             Return
           </label>
-          <button className="primary-button compact-action" type="button" onClick={onPlanRoute} disabled={planner.status === "loading"}>
+          <button className="primary-button compact-action" type="button" onClick={onPlanRoute} disabled={!canMakeRoute} title={routeButtonTitle}>
             {planner.status === "loading" ? "Checking..." : "Make route"}
           </button>
         </div>
@@ -2172,10 +2206,12 @@ function RoutePlannerPanel({ day, ideas, planner, onPlannerChange, onPlanRoute, 
             className={`route-idea-chip${selectedIdeaSet.has(idea.id) ? " is-selected" : ""}${idea.place?.latitude == null ? " is-missing-place" : ""}`}
             type="button"
             key={idea.id}
+            disabled={!hasPlaceCoordinates(idea.place)}
+            title={hasPlaceCoordinates(idea.place) ? "Use this idea in the route" : "Resolve this idea place before routing"}
             onClick={() => toggleIdea(idea.id)}
           >
             <span>{idea.title}</span>
-            <small>{idea.place?.name || idea.city || "Needs place"}</small>
+            <small>{hasPlaceCoordinates(idea.place) ? idea.place?.name || idea.city || "Resolved place" : "Resolve place first"}</small>
           </button>
         ))}
         {!routeIdeas.length ? <p className="empty-trip-list">No ideas available for routing yet.</p> : null}
@@ -3707,6 +3743,10 @@ function getGoogleMapsEmbedQuery(url) {
 
 function getResolveTargetKey(targetType, targetClientId) {
   return `${targetType}:${targetClientId}`;
+}
+
+function hasPlaceCoordinates(place) {
+  return Number.isFinite(Number(place?.latitude)) && Number.isFinite(Number(place?.longitude));
 }
 
 function applyResolvedPlace(trip, { targetType, targetClientId, dayId, mapLink }, place) {
