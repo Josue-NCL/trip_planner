@@ -238,7 +238,7 @@ function App() {
       setSession((currentSession) => {
         const currentUserId = currentSession?.user?.id ?? "";
         const nextUserId = nextSession.user?.id ?? "";
-        if (event === "SIGNED_IN" || !currentSession || currentUserId !== nextUserId) {
+        if (!currentSession || currentUserId !== nextUserId) {
           return nextSession;
         }
         return currentSession;
