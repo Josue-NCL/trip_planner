@@ -1,0 +1,23 @@
+[build]
+  command = "pnpm build"
+  publish = "dist"
+
+[[redirects]]
+  from = "/trip/assets/*"
+  to = "/assets/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/trip/favicon.svg"
+  to = "/favicon.svg"
+  status = 200
+
+[[redirects]]
+  from = "/trip"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/trip/*"
+  to = "/index.html"
+  status = 200
