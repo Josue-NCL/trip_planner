@@ -30,7 +30,8 @@ export function mapRowsToTrip({ trip, travelers = [], days = [], scheduleItems =
       notes: item.notes,
       cost: item.cost,
       link: item.link,
-      mapLink: item.map_link
+      mapLink: item.map_link,
+      place: mapPlaceFromRow(item)
     };
     const dayItems = scheduleByDayId.get(String(item.trip_day_id)) ?? [];
     dayItems.push(row);
@@ -48,6 +49,8 @@ export function mapRowsToTrip({ trip, travelers = [], days = [], scheduleItems =
       dayNumber: day.day_number,
       city: day.city,
       notes: day.notes,
+      baseMapLink: day.base_map_link ?? "",
+      basePlace: mapBasePlaceFromRow(day),
       schedule: (scheduleByDayId.get(String(day.id)) ?? []).sort((a, b) => (a.start ?? "").localeCompare(b.start ?? ""))
     })),
     ideas: [...ideas].sort((a, b) => a.sort_order - b.sort_order).map((idea) => ({
@@ -61,6 +64,7 @@ export function mapRowsToTrip({ trip, travelers = [], days = [], scheduleItems =
       cost: idea.cost,
       link: idea.link,
       mapLink: idea.map_link,
+      place: mapPlaceFromRow(idea),
       imageKey: idea.image_key,
       votes: {
         ...Object.fromEntries(travelerNames.map((name) => [name, ""])),
@@ -85,7 +89,9 @@ export function buildTripRows(tripId, trip) {
     trip_date: day.date,
     day_number: index + 1,
     city: day.city ?? "",
-    notes: day.notes ?? ""
+    notes: day.notes ?? "",
+    base_map_link: day.baseMapLink ?? "",
+    ...mapBasePlaceToRow(day.basePlace)
   }));
 
   const scheduleItems = [];
@@ -104,6 +110,7 @@ export function buildTripRows(tripId, trip) {
         cost: item.cost ?? "",
         link: item.link ?? "",
         map_link: item.mapLink ?? "",
+        ...mapPlaceToRow(item.place),
         sort_order: index
       });
     });
@@ -121,6 +128,7 @@ export function buildTripRows(tripId, trip) {
     cost: idea.cost ?? "",
     link: idea.link ?? "",
     map_link: idea.mapLink ?? "",
+    ...mapPlaceToRow(idea.place),
     image_key: idea.imageKey ?? "",
     sort_order: index,
     votes: idea.votes ?? {}
@@ -136,6 +144,62 @@ export function buildTripRows(tripId, trip) {
     days,
     scheduleItems,
     ideas
+  };
+}
+
+function mapPlaceFromRow(row) {
+  if (!row.place_id && row.latitude == null && row.longitude == null && !row.place_name && !row.formatted_address) {
+    return null;
+  }
+
+  return {
+    id: row.place_id ?? "",
+    name: row.place_name ?? "",
+    formattedAddress: row.formatted_address ?? "",
+    latitude: row.latitude ?? null,
+    longitude: row.longitude ?? null,
+    googleMapsUri: row.google_maps_uri ?? "",
+    resolvedAt: row.place_resolved_at ?? ""
+  };
+}
+
+function mapBasePlaceFromRow(row) {
+  if (!row.base_place_id && row.base_latitude == null && row.base_longitude == null && !row.base_place_name && !row.base_formatted_address) {
+    return null;
+  }
+
+  return {
+    id: row.base_place_id ?? "",
+    name: row.base_place_name ?? "",
+    formattedAddress: row.base_formatted_address ?? "",
+    latitude: row.base_latitude ?? null,
+    longitude: row.base_longitude ?? null,
+    googleMapsUri: row.base_google_maps_uri ?? "",
+    resolvedAt: row.base_place_resolved_at ?? ""
+  };
+}
+
+function mapPlaceToRow(place) {
+  return {
+    place_id: place?.id ?? null,
+    place_name: place?.name ?? null,
+    formatted_address: place?.formattedAddress ?? null,
+    latitude: place?.latitude ?? null,
+    longitude: place?.longitude ?? null,
+    google_maps_uri: place?.googleMapsUri ?? null,
+    place_resolved_at: place?.resolvedAt ?? null
+  };
+}
+
+function mapBasePlaceToRow(place) {
+  return {
+    base_place_id: place?.id ?? null,
+    base_place_name: place?.name ?? null,
+    base_formatted_address: place?.formattedAddress ?? null,
+    base_latitude: place?.latitude ?? null,
+    base_longitude: place?.longitude ?? null,
+    base_google_maps_uri: place?.googleMapsUri ?? null,
+    base_place_resolved_at: place?.resolvedAt ?? null
   };
 }
 

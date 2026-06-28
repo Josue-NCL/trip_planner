@@ -23,6 +23,7 @@ import {
   PanelLeftOpen,
   Plus,
   RefreshCcw,
+  Route,
   ShoppingBag,
   Sun,
   Train,
@@ -37,6 +38,7 @@ import { ensureUserProfile, getCurrentSession, onAuthSessionChange, sendMagicLin
 import { acceptTripInvite, claimTripTraveler, createTripInvite, listTripCollaboration, revokeTripInvite } from "./lib/collaborationRepository.js";
 import { downloadTripExport } from "./lib/export.js";
 import { isSupabaseConfigured } from "./lib/supabaseClient.js";
+import { resolvePlace, routeDay } from "./lib/mapsRepository.js";
 import { isValidTrip, loadTrip, mergeIdeas } from "./lib/storage.js";
 import { createTripFromPayload, listTrips, loadRemoteTrip, replaceTripPayload, subscribeToTripChanges } from "./lib/tripRepository.js";
 
@@ -178,6 +180,15 @@ function App() {
   const [editingSchedule, setEditingSchedule] = useState(null);
   const [editingIdea, setEditingIdea] = useState(null);
   const [editingDay, setEditingDay] = useState(null);
+  const [resolvingTarget, setResolvingTarget] = useState("");
+  const [routePlanner, setRoutePlanner] = useState({
+    isOpen: false,
+    selectedIdeaIds: [],
+    travelMode: "TRANSIT",
+    returnToBase: true,
+    status: "idle",
+    result: null
+  });
   const [pendingImport, setPendingImport] = useState(null);
   const [toasts, setToasts] = useState([]);
   const fileInputRef = useRef(null);
@@ -688,6 +699,8 @@ function App() {
       label: "",
       city: lastDay?.city ?? "Tokyo",
       notes: "",
+      baseMapLink: "",
+      basePlace: null,
       schedule: []
     };
 
@@ -708,7 +721,9 @@ function App() {
               date: dayDraft.date,
               label: dayDraft.label?.trim() ?? "",
               city: dayDraft.city.trim() || "Japan",
-              notes: dayDraft.notes ?? ""
+              notes: dayDraft.notes ?? "",
+              baseMapLink: dayDraft.baseMapLink?.trim() ?? "",
+              basePlace: dayDraft.basePlace ?? null
             }
           : day
       )
@@ -799,6 +814,63 @@ function App() {
     }));
     setEditingSchedule(null);
     showToast({ type: "success", message: "Activity deleted" });
+  }
+
+  async function resolveTripPlace({ targetType, targetClientId, dayId, mapLink, query, title, city }) {
+    if (!selectedTripId) {
+      showToast({ type: "error", message: "Open a Supabase trip before resolving places." });
+      return null;
+    }
+
+    const targetKey = getResolveTargetKey(targetType, targetClientId);
+    setResolvingTarget(targetKey);
+    try {
+      suppressLocalRealtimeEcho();
+      const result = await resolvePlace({
+        tripId: selectedTripId,
+        targetType,
+        targetClientId,
+        mapLink,
+        query,
+        title,
+        city
+      });
+      const place = result.place;
+      setTrip((current) => applyResolvedPlace(current, { targetType, targetClientId, dayId, mapLink }, place));
+      showToast({ type: "success", message: "Google Maps place resolved" });
+      return place;
+    } catch (error) {
+      showToast({ type: "error", message: error.message });
+      return null;
+    } finally {
+      setResolvingTarget("");
+    }
+  }
+
+  async function planSelectedDayRoute() {
+    if (!selectedTripId || !selectedDay) {
+      return;
+    }
+
+    setRoutePlanner((current) => ({ ...current, status: "loading", result: null }));
+    try {
+      const result = await routeDay({
+        tripId: selectedTripId,
+        dayClientId: selectedDay.id,
+        ideaClientIds: routePlanner.selectedIdeaIds,
+        travelMode: routePlanner.travelMode,
+        returnToBase: routePlanner.returnToBase
+      });
+      setRoutePlanner((current) => ({ ...current, status: "ready", result }));
+      if (result.status === "needs_place_data") {
+        showToast({ type: "info", message: "Resolve more places before routing this day." });
+      } else {
+        showToast({ type: "success", message: "Route suggestion ready" });
+      }
+    } catch (error) {
+      setRoutePlanner((current) => ({ ...current, status: "error", result: null }));
+      showToast({ type: "error", message: error.message });
+    }
   }
 
   function moveScheduleItem(sourceDayId, itemId, targetDayId, targetStart) {
@@ -1012,7 +1084,8 @@ function App() {
         notes: idea.notes ?? "",
         cost: idea.cost ?? "",
         link: idea.link ?? "",
-        mapLink: idea.mapLink ?? ""
+        mapLink: idea.mapLink ?? "",
+        place: idea.place ?? null
       }
     });
   }
@@ -1185,7 +1258,9 @@ function App() {
           sortedSchedule={sortedSchedule}
           stats={dayStats}
           mode={dayViewMode}
+          allIdeas={trip.ideas}
           ideasCount={trip.ideas.length}
+          routePlanner={routePlanner}
           onAdd={openNewScheduleModal}
           onEdit={(item) => setEditingSchedule({ mode: "edit", dayId: selectedDay.id, item })}
           onScheduleMove={moveScheduleItem}
@@ -1193,6 +1268,9 @@ function App() {
           onDayChange={(updater) => updateDay(selectedDay.id, updater)}
           onEditDay={() => setEditingDay(selectedDay)}
           onOpenIdeas={() => setActiveView("ideas")}
+          onRoutePlannerChange={setRoutePlanner}
+          onPlanRoute={planSelectedDayRoute}
+          onPromoteIdea={openIdeaPromotion}
           onAutoArrange={autoArrangeSelectedDay}
           onModeChange={setDayViewMode}
         />
@@ -1239,6 +1317,17 @@ function App() {
       {editingSchedule ? (
         <EditScheduleModal
           payload={editingSchedule}
+          resolvingTarget={resolvingTarget}
+          onResolvePlace={(draft) =>
+            resolveTripPlace({
+              targetType: "schedule_item",
+              targetClientId: draft.id,
+              dayId: editingSchedule.dayId,
+              mapLink: draft.mapLink,
+              title: draft.title,
+              city: draft.city
+            })
+          }
           onCancel={() => setEditingSchedule(null)}
           onSave={(item) => saveScheduleItem(editingSchedule.dayId, item, editingSchedule.consumedIdeaId)}
           onDelete={() => deleteScheduleItem(editingSchedule.dayId, editingSchedule.item.id)}
@@ -1258,6 +1347,16 @@ function App() {
       {editingIdea ? (
         <EditIdeaModal
           idea={editingIdea}
+          resolvingTarget={resolvingTarget}
+          onResolvePlace={(draft) =>
+            resolveTripPlace({
+              targetType: "idea",
+              targetClientId: draft.id,
+              mapLink: draft.mapLink,
+              title: draft.title,
+              city: draft.city
+            })
+          }
           onCancel={() => setEditingIdea(null)}
           onSave={saveIdea}
           onDelete={() => deleteIdea(editingIdea.id)}
@@ -1268,6 +1367,16 @@ function App() {
         <EditDayModal
           day={editingDay}
           canDelete={sortedDays.length > 1}
+          resolvingTarget={resolvingTarget}
+          onResolveBase={(draft) =>
+            resolveTripPlace({
+              targetType: "trip_day_base",
+              targetClientId: draft.id,
+              mapLink: draft.baseMapLink,
+              title: draft.basePlace?.name || draft.city,
+              city: draft.city
+            })
+          }
           onCancel={() => setEditingDay(null)}
           onSave={saveTripDay}
           onDelete={() => deleteTripDay(editingDay.id)}
@@ -1819,7 +1928,9 @@ function DayTimeline({
   sortedSchedule,
   stats,
   mode,
+  allIdeas,
   ideasCount,
+  routePlanner,
   onAdd,
   onEdit,
   onScheduleMove,
@@ -1827,6 +1938,9 @@ function DayTimeline({
   onDayChange,
   onEditDay,
   onOpenIdeas,
+  onRoutePlannerChange,
+  onPlanRoute,
+  onPromoteIdea,
   onAutoArrange,
   onModeChange
 }) {
@@ -1913,6 +2027,10 @@ function DayTimeline({
           <Plus size={17} />
           Add Activity
         </button>
+        <button className="ghost-button" type="button" onClick={() => onRoutePlannerChange((current) => ({ ...current, isOpen: !current.isOpen }))}>
+          <Route size={17} />
+          Route
+        </button>
         <span className="toolbar-spacer" />
         <button className="ghost-button flat-toolbar" type="button" onClick={onAutoArrange}>
           Auto Arrange
@@ -1926,6 +2044,17 @@ function DayTimeline({
           </button>
         </div>
       </div>
+
+      {routePlanner.isOpen ? (
+        <RoutePlannerPanel
+          day={day}
+          ideas={allIdeas}
+          planner={routePlanner}
+          onPlannerChange={onRoutePlannerChange}
+          onPlanRoute={onPlanRoute}
+          onPromoteIdea={onPromoteIdea}
+        />
+      ) : null}
 
       {mode === "timeline" ? (
         <>
@@ -1986,6 +2115,125 @@ function DayNotesCard({ day, onDayChange }) {
         onChange={(event) => onDayChange((currentDay) => ({ ...currentDay, notes: event.target.value }))}
       />
     </div>
+  );
+}
+
+function RoutePlannerPanel({ day, ideas, planner, onPlannerChange, onPlanRoute, onPromoteIdea }) {
+  const routeIdeas = ideas.filter((idea) => idea.status !== "Skipped");
+  const selectedIdeaSet = new Set(planner.selectedIdeaIds);
+  const result = planner.result;
+
+  function toggleIdea(ideaId) {
+    onPlannerChange((current) => {
+      const selected = new Set(current.selectedIdeaIds);
+      if (selected.has(ideaId)) {
+        selected.delete(ideaId);
+      } else {
+        selected.add(ideaId);
+      }
+      return { ...current, selectedIdeaIds: [...selected], result: null };
+    });
+  }
+
+  return (
+    <section className="route-planner-panel" aria-label="Route planner">
+      <div className="route-planner-header">
+        <div>
+          <strong>Route planner</strong>
+          <small>{day.basePlace?.name || day.baseMapLink ? "Base ready" : "Resolve a day base in Edit Day first"}</small>
+        </div>
+        <div className="route-planner-controls">
+          <select
+            value={planner.travelMode}
+            aria-label="Travel mode"
+            onChange={(event) => onPlannerChange((current) => ({ ...current, travelMode: event.target.value, result: null }))}
+          >
+            <option value="TRANSIT">Transit</option>
+            <option value="WALK">Walk</option>
+            <option value="DRIVE">Drive</option>
+          </select>
+          <label className="route-return-toggle">
+            <input
+              type="checkbox"
+              checked={planner.returnToBase}
+              onChange={(event) => onPlannerChange((current) => ({ ...current, returnToBase: event.target.checked, result: null }))}
+            />
+            Return
+          </label>
+          <button className="primary-button compact-action" type="button" onClick={onPlanRoute} disabled={planner.status === "loading"}>
+            {planner.status === "loading" ? "Checking..." : "Make route"}
+          </button>
+        </div>
+      </div>
+
+      <div className="route-idea-picker">
+        {routeIdeas.map((idea) => (
+          <button
+            className={`route-idea-chip${selectedIdeaSet.has(idea.id) ? " is-selected" : ""}${idea.place?.latitude == null ? " is-missing-place" : ""}`}
+            type="button"
+            key={idea.id}
+            onClick={() => toggleIdea(idea.id)}
+          >
+            <span>{idea.title}</span>
+            <small>{idea.place?.name || idea.city || "Needs place"}</small>
+          </button>
+        ))}
+        {!routeIdeas.length ? <p className="empty-trip-list">No ideas available for routing yet.</p> : null}
+      </div>
+
+      {result ? (
+        <div className="route-result">
+          {result.status === "ok" ? (
+            <>
+              <div className="route-result-summary">
+                <strong>{formatDuration(result.totalTravelMinutes ?? 0)} travel</strong>
+                {result.googleMapsUrl ? (
+                  <a className="map-preview-link" href={result.googleMapsUrl} target="_blank" rel="noreferrer">
+                    <ExternalLink size={15} />
+                    Open route
+                  </a>
+                ) : null}
+              </div>
+              <div className="route-stop-list">
+                {(result.stops ?? []).map((stop, index) => (
+                  <span className="route-stop" key={`${stop.id}-${index}`}>
+                    <strong>{index + 1}</strong>
+                    {stop.title}
+                  </span>
+                ))}
+              </div>
+              <div className="route-recommendations">
+                {(result.recommendations ?? []).map((recommendation) => {
+                  const idea = ideas.find((candidate) => candidate.id === recommendation.ideaClientId);
+                  return (
+                    <div className={`route-recommendation fit-${recommendation.fit}`} key={recommendation.stopId}>
+                      <span>
+                        <strong>{recommendation.title}</strong>
+                        <small>{recommendation.fit} · {recommendation.addedTravelMinutes} min from prior stop</small>
+                      </span>
+                      {idea ? (
+                        <button className="ghost-button compact-action" type="button" onClick={() => onPromoteIdea(idea)}>
+                          Add
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <p className="route-warning">{(result.warnings ?? [])[0] || "Resolve more places before routing this day."}</p>
+          )}
+          {(result.warnings ?? []).length ? (
+            <div className="route-warning-list">
+              {result.warnings.map((warning) => (
+                <span key={warning}>{warning}</span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -2916,7 +3164,7 @@ function PromoteIdeaModal({ promotion, days, onDayChange, onCancel, onContinue }
   );
 }
 
-function EditScheduleModal({ payload, onCancel, onSave, onDelete }) {
+function EditScheduleModal({ payload, resolvingTarget, onResolvePlace, onCancel, onSave, onDelete }) {
   const [draft, setDraft] = useState({ ...DEFAULT_NEW_BLOCK, ...payload.item });
   const [showCost, setShowCost] = useState(Boolean(payload.item.cost));
   const hasExistingDetails = Boolean(
@@ -2927,7 +3175,9 @@ function EditScheduleModal({ payload, onCancel, onSave, onDelete }) {
   );
   const [isDetailsOpen, setIsDetailsOpen] = useState(hasExistingDetails);
   const [isNotesOpen, setIsNotesOpen] = useState(Boolean((payload.item.notes ?? "").trim()));
-  const mapPreview = getMapPreview(draft.mapLink);
+  const mapPreview = getMapPreview(draft.mapLink || draft.place?.googleMapsUri);
+  const canResolvePlace = payload.mode === "edit";
+  const isResolving = resolvingTarget === getResolveTargetKey("schedule_item", draft.id);
   const startMinutes = clampMinutes(parseTimeToMinutes(draft.start) ?? TIME_GRID_START_MINUTES, TIME_GRID_START_MINUTES, TIME_GRID_END_MINUTES - MIN_SCHEDULE_DURATION_MINUTES);
   const durationMinutes = clampMinutes(Number(draft.duration) || DEFAULT_NEW_BLOCK.duration, MIN_SCHEDULE_DURATION_MINUTES, TIME_GRID_END_MINUTES - startMinutes);
 
@@ -2952,6 +3202,13 @@ function EditScheduleModal({ payload, onCancel, onSave, onDelete }) {
       link: draft.link?.trim() ?? "",
       mapLink: draft.mapLink?.trim() ?? ""
     });
+  }
+
+  async function handleResolvePlace() {
+    const place = await onResolvePlace(draft);
+    if (place) {
+      updateDraft({ place, mapLink: draft.mapLink || place.googleMapsUri || "" });
+    }
   }
 
   return (
@@ -3027,6 +3284,13 @@ function EditScheduleModal({ payload, onCancel, onSave, onDelete }) {
                     Website / booking link
                     <input type="url" value={draft.link ?? ""} onChange={(event) => updateDraft({ link: event.target.value })} placeholder="Restaurant, hotel, ticket, or website link" />
                   </label>
+                </div>
+                <div className="place-resolve-row">
+                  <PlaceSummary place={draft.place} />
+                  <button className="ghost-button compact-action" type="button" disabled={!canResolvePlace || isResolving} onClick={handleResolvePlace}>
+                    <MapPin size={16} />
+                    {isResolving ? "Resolving..." : canResolvePlace ? "Resolve place" : "Save first"}
+                  </button>
                 </div>
                 {mapPreview ? <MapPreview preview={mapPreview} /> : null}
                 <div className="editor-cost-row">
@@ -3162,12 +3426,41 @@ function MapPreview({ preview }) {
   );
 }
 
-function EditIdeaModal({ idea, onCancel, onSave, onDelete }) {
+function PlaceSummary({ place, fallback = "No place resolved yet" }) {
+  if (!place?.id && !place?.name && !place?.formattedAddress) {
+    return (
+      <span className="place-summary is-empty">
+        <MapPin size={15} />
+        {fallback}
+      </span>
+    );
+  }
+
+  return (
+    <span className="place-summary">
+      <MapPin size={15} />
+      <span>
+        <strong>{place.name || "Resolved place"}</strong>
+        <small>{place.formattedAddress || "Coordinates saved"}</small>
+      </span>
+    </span>
+  );
+}
+
+function EditIdeaModal({ idea, resolvingTarget, onResolvePlace, onCancel, onSave, onDelete }) {
   const [draft, setDraft] = useState(idea);
-  const mapPreview = getMapPreview(draft.mapLink);
+  const mapPreview = getMapPreview(draft.mapLink || draft.place?.googleMapsUri);
+  const isResolving = resolvingTarget === getResolveTargetKey("idea", draft.id);
 
   function updateDraft(changes) {
     setDraft((current) => ({ ...current, ...changes }));
+  }
+
+  async function handleResolvePlace() {
+    const place = await onResolvePlace(draft);
+    if (place) {
+      updateDraft({ place, mapLink: draft.mapLink || place.googleMapsUri || "" });
+    }
   }
 
   return (
@@ -3215,6 +3508,13 @@ function EditIdeaModal({ idea, onCancel, onSave, onDelete }) {
             Google Maps link
             <input type="url" value={draft.mapLink ?? ""} onChange={(event) => updateDraft({ mapLink: event.target.value })} />
           </label>
+          <div className="span-two place-resolve-row">
+            <PlaceSummary place={draft.place} />
+            <button className="ghost-button compact-action" type="button" disabled={isResolving} onClick={handleResolvePlace}>
+              <MapPin size={16} />
+              {isResolving ? "Resolving..." : "Resolve place"}
+            </button>
+          </div>
           {mapPreview ? (
             <div className="span-two">
               <MapPreview preview={mapPreview} />
@@ -3238,15 +3538,26 @@ function EditIdeaModal({ idea, onCancel, onSave, onDelete }) {
   );
 }
 
-function EditDayModal({ day, canDelete, onCancel, onSave, onDelete }) {
+function EditDayModal({ day, canDelete, resolvingTarget, onResolveBase, onCancel, onSave, onDelete }) {
   const [draft, setDraft] = useState({
     ...day,
     label: day.label ?? "",
-    notes: day.notes ?? ""
+    notes: day.notes ?? "",
+    baseMapLink: day.baseMapLink ?? "",
+    basePlace: day.basePlace ?? null
   });
+  const mapPreview = getMapPreview(draft.baseMapLink || draft.basePlace?.googleMapsUri);
+  const isResolving = resolvingTarget === getResolveTargetKey("trip_day_base", draft.id);
 
   function updateDraft(changes) {
     setDraft((current) => ({ ...current, ...changes }));
+  }
+
+  async function handleResolveBase() {
+    const place = await onResolveBase(draft);
+    if (place) {
+      updateDraft({ basePlace: place, baseMapLink: draft.baseMapLink || place.googleMapsUri || "" });
+    }
   }
 
   return (
@@ -3270,6 +3581,22 @@ function EditDayModal({ day, canDelete, onCancel, onSave, onDelete }) {
             Notes
             <textarea value={draft.notes} onChange={(event) => updateDraft({ notes: event.target.value })} />
           </label>
+          <label className="span-two">
+            Base / hotel Google Maps link
+            <input type="url" value={draft.baseMapLink ?? ""} onChange={(event) => updateDraft({ baseMapLink: event.target.value })} />
+          </label>
+          <div className="span-two place-resolve-row">
+            <PlaceSummary place={draft.basePlace} fallback="No base resolved yet" />
+            <button className="ghost-button compact-action" type="button" disabled={isResolving} onClick={handleResolveBase}>
+              <MapPin size={16} />
+              {isResolving ? "Resolving..." : "Resolve base"}
+            </button>
+          </div>
+          {mapPreview ? (
+            <div className="span-two">
+              <MapPreview preview={mapPreview} />
+            </div>
+          ) : null}
         </FormGrid>
         <div className="dialog-actions">
           <button className="ghost-button danger" type="button" disabled={!canDelete} onClick={onDelete}>
@@ -3376,6 +3703,66 @@ function getGoogleMapsEmbedQuery(url) {
   }
 
   return "";
+}
+
+function getResolveTargetKey(targetType, targetClientId) {
+  return `${targetType}:${targetClientId}`;
+}
+
+function applyResolvedPlace(trip, { targetType, targetClientId, dayId, mapLink }, place) {
+  if (!place) {
+    return trip;
+  }
+
+  if (targetType === "idea") {
+    return {
+      ...trip,
+      ideas: trip.ideas.map((idea) =>
+        idea.id === targetClientId
+          ? {
+              ...idea,
+              place,
+              mapLink: idea.mapLink || mapLink || place.googleMapsUri || ""
+            }
+          : idea
+      )
+    };
+  }
+
+  if (targetType === "trip_day_base") {
+    return {
+      ...trip,
+      days: trip.days.map((day) =>
+        day.id === targetClientId
+          ? {
+              ...day,
+              basePlace: place,
+              baseMapLink: day.baseMapLink || mapLink || place.googleMapsUri || ""
+            }
+          : day
+      )
+    };
+  }
+
+  return {
+    ...trip,
+    days: trip.days.map((day) =>
+      day.id === dayId
+        ? {
+            ...day,
+            schedule: (day.schedule ?? []).map((item) =>
+              item.id === targetClientId
+                ? {
+                    ...item,
+                    place,
+                    mapLink: item.mapLink || mapLink || place.googleMapsUri || ""
+                  }
+                : item
+            )
+          }
+        : day
+    )
+  };
 }
 
 function FormGrid({ children }) {
