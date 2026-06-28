@@ -199,6 +199,7 @@ function App() {
   const skipNextSaveRef = useRef(false);
   const localRealtimeSuppressionUntilRef = useRef(0);
   const acceptingInviteRef = useRef("");
+  const sessionUserId = session?.user?.id ?? "";
 
   useEffect(() => {
     if (!isSupabaseConfigured) {
@@ -224,13 +225,24 @@ function App() {
         }
       });
 
-    const unsubscribe = onAuthSessionChange((nextSession) => {
-      setSession(nextSession);
-      if (!nextSession) {
+    const unsubscribe = onAuthSessionChange((event, nextSession) => {
+      if (event === "SIGNED_OUT" || !nextSession) {
+        setSession(null);
         setSelectedTripId(null);
         setTripLoaded(false);
         setTripSummaries([]);
+        setSyncStatus("idle");
+        return;
       }
+
+      setSession((currentSession) => {
+        const currentUserId = currentSession?.user?.id ?? "";
+        const nextUserId = nextSession.user?.id ?? "";
+        if (event === "SIGNED_IN" || !currentSession || currentUserId !== nextUserId) {
+          return nextSession;
+        }
+        return currentSession;
+      });
     });
 
     return () => {
@@ -244,7 +256,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!session) {
+    if (!sessionUserId) {
       return;
     }
 
@@ -254,10 +266,10 @@ function App() {
         setTripListStatus("error");
         showToast({ type: "error", message: error.message });
       });
-  }, [session]);
+  }, [sessionUserId]);
 
   useEffect(() => {
-    if (!session || !inviteToken || acceptingInviteRef.current === inviteToken) {
+    if (!sessionUserId || !inviteToken || acceptingInviteRef.current === inviteToken) {
       return;
     }
 
@@ -290,7 +302,7 @@ function App() {
     return () => {
       isCurrent = false;
     };
-  }, [inviteToken, session]);
+  }, [inviteToken, sessionUserId]);
 
   const sortedDays = useMemo(() => deriveTripDays(trip.days), [trip.days]);
 
@@ -333,12 +345,12 @@ function App() {
   );
   const dateRangeLabel = useMemo(() => formatTripRange(sortedDays), [sortedDays]);
   const currentMember = useMemo(
-    () => collaboration.members.find((member) => member.profileId === session?.user?.id),
-    [collaboration.members, session?.user?.id]
+    () => collaboration.members.find((member) => member.profileId === sessionUserId),
+    [collaboration.members, sessionUserId]
   );
   const currentTraveler = useMemo(
-    () => collaboration.travelers.find((traveler) => traveler.profileId === session?.user?.id),
-    [collaboration.travelers, session?.user?.id]
+    () => collaboration.travelers.find((traveler) => traveler.profileId === sessionUserId),
+    [collaboration.travelers, sessionUserId]
   );
   const currentTravelerName = currentTraveler?.name ?? "";
   const canManageSharing = currentMember?.role === "owner";
@@ -349,7 +361,7 @@ function App() {
   );
 
   useEffect(() => {
-    if (!session || !selectedTripId) {
+    if (!sessionUserId || !selectedTripId) {
       setCollaboration(EMPTY_COLLABORATION);
       return;
     }
@@ -387,19 +399,19 @@ function App() {
     return () => {
       isCurrent = false;
     };
-  }, [selectedTripId, session]);
+  }, [selectedTripId, sessionUserId]);
 
   useEffect(() => {
-    if (!session || !selectedTripId || !tripLoaded) {
+    if (!sessionUserId || !selectedTripId || !tripLoaded) {
       setCollaboration(EMPTY_COLLABORATION);
       return;
     }
 
     refreshCollaboration({ silent: true });
-  }, [selectedTripId, session, tripLoaded]);
+  }, [selectedTripId, sessionUserId, tripLoaded]);
 
   useEffect(() => {
-    if (!session || !selectedTripId || !tripLoaded) {
+    if (!sessionUserId || !selectedTripId || !tripLoaded) {
       return undefined;
     }
 
@@ -429,10 +441,10 @@ function App() {
     return () => {
       window.clearTimeout(saveTimerRef.current);
     };
-  }, [trip, dateRangeLabel, selectedTripId, session, tripLoaded]);
+  }, [trip, dateRangeLabel, selectedTripId, sessionUserId, tripLoaded]);
 
   useEffect(() => {
-    if (!session || !selectedTripId || !tripLoaded) {
+    if (!sessionUserId || !selectedTripId || !tripLoaded) {
       return undefined;
     }
 
@@ -457,7 +469,7 @@ function App() {
           });
       }, 1000);
     });
-  }, [selectedTripId, session, tripLoaded]);
+  }, [selectedTripId, sessionUserId, tripLoaded]);
 
   async function refreshTripSummaries({ silent = false } = {}) {
     if (!silent) {
