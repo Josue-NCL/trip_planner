@@ -73,7 +73,6 @@ const FLAG_ASSET = `${ASSET_BASE}japan-flag-title.png`;
 const FOOTER_STRIP_ASSET = `${ASSET_BASE}japan-footer-strip.png`;
 const GOOGLE_MAPS_EMBED_KEY = import.meta.env.VITE_GOOGLE_MAPS_EMBED_KEY ?? "";
 const LOCAL_REALTIME_ECHO_SUPPRESSION_MS = 4000;
-const LAST_SELECTED_TRIP_KEY = "japan-2026-last-selected-trip:v1";
 const PENDING_INVITE_TOKEN_KEY = "japan-2026-pending-invite-token:v1";
 const SEEN_EXPENSE_IDS_KEY = "japan-2026-seen-expenses:v1";
 const BUDGET_CURRENCY_SETTINGS_KEY = "japan-2026-budget-currency:v1";
@@ -865,7 +864,6 @@ function App() {
     const summaries = await listTrips(session?.user?.id);
     setTripSummaries(summaries);
     setTripListStatus("ready");
-    restoreLastSelectedTrip(summaries);
     return summaries;
   }
 
@@ -899,7 +897,6 @@ function App() {
       return;
     }
 
-    rememberSelectedTrip(session?.user?.id, nextTripId);
     setSelectedTripId(nextTripId);
   }
 
@@ -909,22 +906,6 @@ function App() {
     setTripLoading(false);
     setSyncStatus("idle");
     setCollaboration(EMPTY_COLLABORATION);
-  }
-
-  function restoreLastSelectedTrip(summaries) {
-    if (selectedTripId || inviteToken) {
-      return;
-    }
-
-    const rememberedTripId = readRememberedTripId(session?.user?.id);
-    if (rememberedTripId && summaries.some((summary) => summary.id === rememberedTripId)) {
-      setSelectedTripId(rememberedTripId);
-      return;
-    }
-
-    if (summaries.length === 1) {
-      selectTrip(summaries[0].id);
-    }
   }
 
   async function refreshCollaboration({ silent = false } = {}) {
@@ -1126,11 +1107,7 @@ function App() {
     }
 
     try {
-      const summaries = await refreshTripSummaries();
-      if (summaries.length === 1) {
-        selectTrip(summaries[0].id);
-        setActiveView("trip");
-      }
+      await refreshTripSummaries();
     } catch (error) {
       setAuthMessage(error.message);
     }
@@ -7269,37 +7246,6 @@ function clearSearchParam(name) {
   const url = new URL(window.location.href);
   url.searchParams.delete(name);
   window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
-}
-
-function rememberSelectedTrip(profileId, tripId) {
-  if (typeof window === "undefined" || !profileId || !tripId) {
-    return;
-  }
-
-  try {
-    const rememberedTrips = readRememberedTrips();
-    rememberedTrips[profileId] = tripId;
-    window.localStorage.setItem(LAST_SELECTED_TRIP_KEY, JSON.stringify(rememberedTrips));
-  } catch {
-    // Remembering the last trip is a convenience; auth and trip loading still work without it.
-  }
-}
-
-function readRememberedTripId(profileId) {
-  if (typeof window === "undefined" || !profileId) {
-    return null;
-  }
-
-  const tripId = Number(readRememberedTrips()[profileId]);
-  return Number.isFinite(tripId) && tripId > 0 ? tripId : null;
-}
-
-function readRememberedTrips() {
-  try {
-    return JSON.parse(window.localStorage.getItem(LAST_SELECTED_TRIP_KEY) ?? "{}");
-  } catch {
-    return {};
-  }
 }
 
 function isDeletedAuthSessionError(error) {
