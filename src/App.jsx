@@ -118,39 +118,48 @@ const BUDGET_CURRENCY_VIEWS = [
   { value: "USD", label: "USD" }
 ];
 const COST_CURRENCY_OPTIONS = SUPPORTED_CURRENCIES;
-const TAG_ASSETS = {
-  category: {
-    Food: `${ICON_BASE}tag-food.png`,
-    "Coffee/Bar": `${ICON_BASE}tag-coffee-bar.png`,
-    Culture: `${ICON_BASE}tag-culture.png`,
-    Transit: `${ICON_BASE}tag-transit.png`,
-    Hotel: `${ICON_BASE}tag-hotel.png`,
-    Shopping: `${ICON_BASE}tag-shopping.png`,
-    "Open Time": `${ICON_BASE}tag-open-time.png`
-  },
-  status: {
-    Booked: `${ICON_BASE}tag-booked.png`,
-    Maybe: `${ICON_BASE}tag-maybe.png`,
-    Skipped: `${ICON_BASE}tag-skipped.png`
-  },
-  meta: {
-    budget: `${ICON_BASE}tag-budget.png`,
-    calendar: `${ICON_BASE}tag-calendar.png`,
-    link: `${ICON_BASE}tag-link.png`,
-    map: `${ICON_BASE}tag-map-pin.png`,
-    notes: `${ICON_BASE}tag-notes.png`,
-    reservation: `${ICON_BASE}tag-reservation.png`
-  }
-};
+function buildTagAssets(suffix = "") {
+  return {
+    category: {
+      Food: `${ICON_BASE}tag-food${suffix}.png`,
+      "Coffee/Bar": `${ICON_BASE}tag-coffee-bar${suffix}.png`,
+      Culture: `${ICON_BASE}tag-culture${suffix}.png`,
+      Transit: `${ICON_BASE}tag-transit${suffix}.png`,
+      Hotel: `${ICON_BASE}tag-hotel${suffix}.png`,
+      Shopping: `${ICON_BASE}tag-shopping${suffix}.png`,
+      "Open Time": `${ICON_BASE}tag-open-time${suffix}.png`
+    },
+    status: {
+      Booked: `${ICON_BASE}tag-booked${suffix}.png`,
+      Maybe: `${ICON_BASE}tag-maybe${suffix}.png`,
+      Skipped: `${ICON_BASE}tag-skipped${suffix}.png`
+    },
+    meta: {
+      budget: `${ICON_BASE}tag-budget${suffix}.png`,
+      calendar: `${ICON_BASE}tag-calendar${suffix}.png`,
+      link: `${ICON_BASE}tag-link${suffix}.png`,
+      map: `${ICON_BASE}tag-map-pin${suffix}.png`,
+      notes: `${ICON_BASE}tag-notes${suffix}.png`,
+      reservation: `${ICON_BASE}tag-reservation${suffix}.png`
+    }
+  };
+}
 
-const CATEGORY_CONFIG = {
-  Food: { icon: Utensils, asset: TAG_ASSETS.category.Food, className: "food", label: "Food", short: "Food" },
-  "Coffee/Bar": { icon: Coffee, asset: TAG_ASSETS.category["Coffee/Bar"], className: "coffee", label: "Coffee/Bar", short: "Cafe" },
-  Culture: { icon: Landmark, asset: TAG_ASSETS.category.Culture, className: "culture", label: "Culture", short: "See" },
-  Transit: { icon: Train, asset: TAG_ASSETS.category.Transit, className: "transit", label: "Transit", short: "Go" },
-  Hotel: { icon: Bed, asset: TAG_ASSETS.category.Hotel, className: "hotel", label: "Hotel", short: "Hotel" },
-  Shopping: { icon: ShoppingBag, asset: TAG_ASSETS.category.Shopping, className: "shopping", label: "Shopping", short: "Shop" },
-  "Open Time": { icon: Clock3, asset: TAG_ASSETS.category["Open Time"], className: "open", label: "Open Time", short: "Open" }
+const TAG_ASSET_THEMES = {
+  japan: buildTagAssets(""),
+  generic: buildTagAssets("-generic")
+};
+const DEFAULT_TAG_ASSETS = TAG_ASSET_THEMES.japan;
+const TagAssetsContext = React.createContext(DEFAULT_TAG_ASSETS);
+
+const CATEGORY_CONFIG_BASE = {
+  Food: { icon: Utensils, className: "food", label: "Food", short: "Food" },
+  "Coffee/Bar": { icon: Coffee, className: "coffee", label: "Coffee/Bar", short: "Cafe" },
+  Culture: { icon: Landmark, className: "culture", label: "Culture", short: "See" },
+  Transit: { icon: Train, className: "transit", label: "Transit", short: "Go" },
+  Hotel: { icon: Bed, className: "hotel", label: "Hotel", short: "Hotel" },
+  Shopping: { icon: ShoppingBag, className: "shopping", label: "Shopping", short: "Shop" },
+  "Open Time": { icon: Clock3, className: "open", label: "Open Time", short: "Open" }
 };
 
 const STATUS_CLASS = {
@@ -167,13 +176,6 @@ const STAY_RAIL_COLORS = [
   { background: "#fff1dc", backgroundSoft: "#fffaf2", border: "#e0ad5e", text: "#875719" },
   { background: "#ffeaf0", backgroundSoft: "#fff8fa", border: "#de93a8", text: "#90435d" }
 ];
-
-const STATUS_ASSETS = {
-  Proposed: TAG_ASSETS.meta.notes,
-  Maybe: TAG_ASSETS.status.Maybe,
-  Booked: TAG_ASSETS.status.Booked,
-  Skipped: TAG_ASSETS.status.Skipped
-};
 
 const DEFAULT_NEW_IDEA = {
   title: "",
@@ -563,6 +565,7 @@ function App() {
 
   const sortedDays = useMemo(() => deriveTripDays(trip.days), [trip.days]);
   const mapsProfile = useMemo(() => getTripMapsProfile(trip, sortedDays), [trip, sortedDays]);
+  const tagAssets = useMemo(() => getTagAssetsForMapsProfile(mapsProfile), [mapsProfile.id]);
 
   const selectedDay = useMemo(
     () => sortedDays.find((day) => day.id === selectedDayId) ?? sortedDays[0],
@@ -2022,6 +2025,7 @@ function App() {
   }
 
   return (
+    <TagAssetsContext.Provider value={tagAssets}>
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-block">
@@ -2313,6 +2317,7 @@ function App() {
         />
       ) : null}
     </div>
+    </TagAssetsContext.Provider>
   );
 }
 
@@ -3268,9 +3273,10 @@ function ScheduleEvent({
   onPointerDown,
   onResizePointerDown
 }) {
-  const config = getCategoryConfig(item.category);
+  const tagAssets = useTagAssets();
+  const config = getCategoryConfigForAssets(item.category, tagAssets);
   const Icon = config.icon;
-  const detail = getScheduleEventDetail(item, dayCity);
+  const detail = getScheduleEventDetail(item, dayCity, tagAssets);
 
   return (
     <article
@@ -3729,6 +3735,7 @@ function TripTimeDayColumn({
   onEditSchedule,
   shouldSuppressClick
 }) {
+  const tagAssets = useTagAssets();
   const schedule = sortActivitySchedule(day.schedule);
 
   return (
@@ -3743,10 +3750,10 @@ function TripTimeDayColumn({
     >
       <DropSlotIndicator preview={dropPreview} />
       {schedule.map((item) => {
-        const config = getCategoryConfig(item.category);
+        const config = getCategoryConfigForAssets(item.category, tagAssets);
         const Icon = config.icon;
         const layout = getTimeGridEventLayout(item, TRIP_TIME_GRID_ROW_HEIGHT);
-        const detail = getTripTimeEventDetail(item, day.city);
+        const detail = getTripTimeEventDetail(item, day.city, tagAssets);
 
         return (
           <article
@@ -4086,6 +4093,8 @@ function ExpensesSection({
 }
 
 function ExpenseBudgetFilters({ filters, activeFilter, onChange }) {
+  const tagAssets = useTagAssets();
+
   if (filters.length <= 1) {
     return null;
   }
@@ -4098,7 +4107,7 @@ function ExpenseBudgetFilters({ filters, activeFilter, onChange }) {
       </span>
       <div className="category-filter-options">
         {filters.map((filter) => {
-          const config = filter === "All" || filter === "Expense" ? null : getCategoryConfig(filter);
+          const config = filter === "All" || filter === "Expense" ? null : getCategoryConfigForAssets(filter, tagAssets);
           return (
             <button className={activeFilter === filter ? "is-active" : ""} type="button" key={filter} onClick={() => onChange(filter)}>
               {config?.asset ? <TagIcon src={config.asset} size="tiny" /> : null}
@@ -4122,7 +4131,8 @@ function ExpenseMetric({ label, value, detail = "" }) {
 }
 
 function BudgetExpenseRow({ row, onTrack }) {
-  const config = row.category ? getCategoryConfig(row.category) : null;
+  const tagAssets = useTagAssets();
+  const config = row.category ? getCategoryConfigForAssets(row.category, tagAssets) : null;
 
   return (
     <article className={`budget-expense-row${row.isEstimate ? " is-estimate" : ""}`}>
@@ -4578,6 +4588,8 @@ function ExpenseModal({ mode, expense, travelers, onCancel, onSave, onDelete }) 
 }
 
 function IdeaFilters({ activeCategory, onChange }) {
+  const tagAssets = useTagAssets();
+
   return (
     <div className="category-filters" aria-label="Idea category filters">
       <span className="category-filter-label">
@@ -4586,7 +4598,7 @@ function IdeaFilters({ activeCategory, onChange }) {
       </span>
       <div className="category-filter-options">
         {CATEGORY_FILTERS.map((category) => {
-          const config = category === "All" ? null : getCategoryConfig(category);
+          const config = category === "All" ? null : getCategoryConfigForAssets(category, tagAssets);
           const Icon = config?.icon ?? Filter;
           return (
             <button className={activeCategory === category ? "is-active" : ""} type="button" key={category} aria-pressed={activeCategory === category} onClick={() => onChange(category)}>
@@ -4639,7 +4651,8 @@ function ActivityIdeaPicker({ ideas, allIdeas, travelers, activeTab, activeCateg
 }
 
 function IdeaPickerRow({ idea, travelers, disabled, isPending, onPick }) {
-  const config = getCategoryConfig(idea.category);
+  const tagAssets = useTagAssets();
+  const config = getCategoryConfigForAssets(idea.category, tagAssets);
 
   return (
     <article className="idea-row idea-picker-row">
@@ -4651,7 +4664,7 @@ function IdeaPickerRow({ idea, travelers, disabled, isPending, onPick }) {
         <small>{idea.city || "Japan"}</small>
         <span className="idea-meta-line">
           <span className={`status-pill ${STATUS_CLASS[idea.status]}`}>
-            <TagIcon src={STATUS_ASSETS[idea.status]} size="tiny" />
+            <TagIcon src={getStatusAsset(idea.status, tagAssets)} size="tiny" />
             {idea.status}
           </span>
           {idea.cost ? <span>{idea.cost}</span> : null}
@@ -4677,7 +4690,8 @@ function IdeaPickerRow({ idea, travelers, disabled, isPending, onPick }) {
 }
 
 function IdeaRow({ idea, travelers, currentTravelerName, onEdit, onDelete, onVote, onPromote }) {
-  const config = getCategoryConfig(idea.category);
+  const tagAssets = useTagAssets();
+  const config = getCategoryConfigForAssets(idea.category, tagAssets);
 
   return (
     <article className="idea-row">
@@ -4689,7 +4703,7 @@ function IdeaRow({ idea, travelers, currentTravelerName, onEdit, onDelete, onVot
         <small>{idea.city || "Japan"}</small>
         <span className="idea-meta-line">
           <span className={`status-pill ${STATUS_CLASS[idea.status]}`}>
-            <TagIcon src={STATUS_ASSETS[idea.status]} size="tiny" />
+            <TagIcon src={getStatusAsset(idea.status, tagAssets)} size="tiny" />
             {idea.status}
           </span>
         </span>
@@ -4998,6 +5012,7 @@ function SharingModal({
 }
 
 function PromoteIdeaModal({ promotion, days, onDayChange, onCancel, onContinue }) {
+  const tagAssets = useTagAssets();
   const selectedDay = days.find((day) => day.id === promotion.dayId) ?? days[0];
 
   return (
@@ -5005,7 +5020,7 @@ function PromoteIdeaModal({ promotion, days, onDayChange, onCancel, onContinue }
       <div className="dialog promote-dialog" role="dialog" aria-modal="true" aria-label="Add idea as activity">
         <DialogHeader title="Add as activity" onClose={onCancel} />
         <div className="promote-summary">
-          <TagIcon src={getCategoryConfig(promotion.idea.category).asset} size="chip" />
+          <TagIcon src={getCategoryConfigForAssets(promotion.idea.category, tagAssets).asset} size="chip" />
           <div>
             <strong>{promotion.idea.title}</strong>
             <span>{promotion.idea.city || "Japan"}</span>
@@ -6767,7 +6782,30 @@ function TravelStrip() {
 }
 
 function getCategoryConfig(category) {
-  return CATEGORY_CONFIG[category] ?? CATEGORY_CONFIG["Open Time"];
+  return getCategoryConfigForAssets(category, DEFAULT_TAG_ASSETS);
+}
+
+function getCategoryConfigForAssets(category, tagAssets = DEFAULT_TAG_ASSETS) {
+  const baseConfig = CATEGORY_CONFIG_BASE[category] ?? CATEGORY_CONFIG_BASE["Open Time"];
+  return {
+    ...baseConfig,
+    asset: tagAssets.category[category] ?? tagAssets.category["Open Time"]
+  };
+}
+
+function getStatusAsset(status, tagAssets = DEFAULT_TAG_ASSETS) {
+  if (status === "Proposed") {
+    return tagAssets.meta.notes;
+  }
+  return tagAssets.status[status] ?? tagAssets.meta.notes;
+}
+
+function getTagAssetsForMapsProfile(mapsProfile) {
+  return mapsProfile?.id === "japan" ? TAG_ASSET_THEMES.japan : TAG_ASSET_THEMES.generic;
+}
+
+function useTagAssets() {
+  return React.useContext(TagAssetsContext);
 }
 
 function formatCategoryFilterLabel(category) {
@@ -7063,7 +7101,7 @@ function getTimeGridBlockLayout(startTime, durationMinutes, rowHeight = DAY_TIME
   };
 }
 
-function getTripTimeEventDetail(item, dayCity = "") {
+function getTripTimeEventDetail(item, dayCity = "", tagAssets = DEFAULT_TAG_ASSETS) {
   const duration = Number(item.duration) || TIME_GRID_STEP_MINUTES;
   const description = duration >= 45 ? (item.notes ?? "").trim() : "";
   const itemCity = (item.city ?? "").trim();
@@ -7071,16 +7109,16 @@ function getTripTimeEventDetail(item, dayCity = "") {
   const meta = [];
 
   if (duration >= 90) {
-    meta.push({ key: "duration", label: formatDuration(duration), asset: TAG_ASSETS.meta.calendar });
+    meta.push({ key: "duration", label: formatDuration(duration), asset: tagAssets.meta.calendar });
     if (itemCity && itemCity.toLowerCase() !== normalizedDayCity) {
-      meta.push({ key: "location", label: itemCity, asset: TAG_ASSETS.meta.map });
+      meta.push({ key: "location", label: itemCity, asset: tagAssets.meta.map });
     }
   }
 
   return { description, meta };
 }
 
-function getScheduleEventDetail(item, dayCity = "") {
+function getScheduleEventDetail(item, dayCity = "", tagAssets = DEFAULT_TAG_ASSETS) {
   const duration = Number(item.duration) || TIME_GRID_STEP_MINUTES;
   const description = (item.notes ?? "").trim();
   const chips = [];
@@ -7092,23 +7130,23 @@ function getScheduleEventDetail(item, dayCity = "") {
   const hasLink = Boolean((item.link ?? "").trim());
 
   if (duration >= 60) {
-    chips.push({ key: "duration", label: formatDuration(duration), title: "Duration", asset: TAG_ASSETS.meta.calendar });
+    chips.push({ key: "duration", label: formatDuration(duration), title: "Duration", asset: tagAssets.meta.calendar });
   }
 
   if (shouldShowLocation) {
-    chips.push({ key: "location", label: itemCity, title: "Area", asset: TAG_ASSETS.meta.map });
+    chips.push({ key: "location", label: itemCity, title: "Area", asset: tagAssets.meta.map });
   }
 
   if (cost) {
-    chips.push({ key: "cost", label: cost, title: "Cost", asset: TAG_ASSETS.meta.budget });
+    chips.push({ key: "cost", label: cost, title: "Cost", asset: tagAssets.meta.budget });
   }
 
   if (hasMap) {
-    chips.push({ key: "map", label: "Map", title: "Map link saved", asset: TAG_ASSETS.meta.map });
+    chips.push({ key: "map", label: "Map", title: "Map link saved", asset: tagAssets.meta.map });
   }
 
   if (hasLink) {
-    chips.push({ key: "link", label: "Link", title: "Website or booking link saved", asset: TAG_ASSETS.meta.link });
+    chips.push({ key: "link", label: "Link", title: "Website or booking link saved", asset: tagAssets.meta.link });
   }
 
   return {
