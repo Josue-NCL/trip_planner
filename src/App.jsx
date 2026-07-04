@@ -306,7 +306,7 @@ const CREATE_TRIP_FORM_SCHEMA = z
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["endDate"],
-        message: "End date must be after the start date."
+        message: "End date must be on or after the start date."
       });
     }
   });
@@ -2500,8 +2500,10 @@ function CreateTripModal({ onCancel, onCreate }) {
   const today = getTodayDate();
   const {
     formState: { errors },
+    getValues,
     handleSubmit,
-    register
+    register,
+    setValue
   } = useForm({
     resolver: zodResolver(CREATE_TRIP_FORM_SCHEMA),
     defaultValues: {
@@ -2512,6 +2514,25 @@ function CreateTripModal({ onCancel, onCreate }) {
       travelerName: "Me"
     }
   });
+  const [endDateMin, setEndDateMin] = useState(today);
+  const startDateField = register("startDate");
+  const endDateField = register("endDate");
+
+  function keepEndDateAfterStart(event) {
+    const nextStartDate = event.target.value;
+    setEndDateMin(nextStartDate || today);
+    const endDateElement = event.currentTarget.form?.elements.namedItem("endDate");
+    const currentEndDate = typeof endDateElement?.value === "string" ? endDateElement.value : getValues("endDate");
+
+    if (nextStartDate && currentEndDate && dateSortValue(currentEndDate) < dateSortValue(nextStartDate)) {
+      setValue("endDate", nextStartDate, { shouldDirty: true, shouldValidate: true });
+    }
+  }
+
+  function handleStartDateChange(event) {
+    startDateField.onChange(event);
+    keepEndDateAfterStart(event);
+  }
 
   return (
     <div className="dialog-backdrop" role="presentation">
@@ -2525,12 +2546,12 @@ function CreateTripModal({ onCancel, onCreate }) {
           </label>
           <label>
             Start date
-            <input {...register("startDate")} type="date" />
+            <input {...startDateField} type="date" onChange={handleStartDateChange} onInput={handleStartDateChange} />
             {errors.startDate ? <small className="form-error">{errors.startDate.message}</small> : null}
           </label>
           <label>
             End date
-            <input {...register("endDate")} type="date" />
+            <input {...endDateField} type="date" min={endDateMin} />
             {errors.endDate ? <small className="form-error">{errors.endDate.message}</small> : null}
           </label>
           <label>
