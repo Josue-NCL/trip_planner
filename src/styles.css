@@ -2899,6 +2899,16 @@ textarea:focus {
   background: var(--maybe);
 }
 
+.identity-empty-action {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+
+.identity-empty-action p {
+  margin: 0;
+}
+
 .identity-dialog-actions {
   justify-content: center;
   padding-top: 4px;

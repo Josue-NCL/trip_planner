@@ -154,6 +154,49 @@ export async function claimTripTraveler(travelerId) {
   throwIfError(error);
 }
 
+export async function createOwnTripTraveler({ tripId, name }) {
+  const client = requireSupabase();
+  const {
+    data: { user },
+    error: userError
+  } = await client.auth.getUser();
+  throwIfError(userError);
+
+  if (!user?.id) {
+    throw new Error("Sign in before creating a traveler.");
+  }
+
+  const nextName = String(name ?? "").trim() || getNameFromEmail(user.email);
+  const { data: travelers, error: travelersError } = await client
+    .from("trip_travelers")
+    .select("id, name, profile_id, sort_order, client_id")
+    .eq("trip_id", tripId)
+    .order("sort_order");
+  throwIfError(travelersError);
+
+  const existingTraveler = (travelers ?? []).find((traveler) => traveler.profile_id === user.id);
+  if (existingTraveler) {
+    return existingTraveler;
+  }
+
+  const travelerName = getAvailableTravelerName(nextName, travelers ?? []);
+  const sortOrder = (travelers ?? []).reduce((max, traveler) => Math.max(max, Number(traveler.sort_order) || 0), -1) + 1;
+  const { data, error } = await client
+    .from("trip_travelers")
+    .insert({
+      trip_id: tripId,
+      client_id: createTravelerClientId(travelerName),
+      name: travelerName,
+      profile_id: user.id,
+      sort_order: sortOrder
+    })
+    .select("id, name, profile_id, sort_order, client_id")
+    .single();
+  throwIfError(error);
+
+  return data;
+}
+
 export async function updateTripTravelerName(travelerId, name) {
   const client = requireSupabase();
   const nextName = String(name ?? "").trim();
@@ -198,6 +241,36 @@ function normalizeInviteRole(role) {
     throw new Error("Choose a valid access level.");
   }
   return value;
+}
+
+function getAvailableTravelerName(name, travelers) {
+  const baseName = String(name ?? "").trim() || "Traveler";
+  const usedNames = new Set(travelers.map((traveler) => String(traveler.name ?? "").trim().toLowerCase()));
+  if (!usedNames.has(baseName.toLowerCase())) {
+    return baseName;
+  }
+
+  for (let suffix = 2; suffix < 100; suffix += 1) {
+    const candidate = `${baseName} ${suffix}`;
+    if (!usedNames.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+
+  return `${baseName} ${Date.now()}`;
+}
+
+function createTravelerClientId(name) {
+  const slug = String(name ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return `traveler-${slug || "guest"}-${Date.now().toString(36)}`;
+}
+
+function getNameFromEmail(email) {
+  return String(email ?? "").split("@")[0] || "Traveler";
 }
 
 function normalizeJoinedProfile(profile) {

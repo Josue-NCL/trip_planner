@@ -47,7 +47,7 @@ import {
 import { CATEGORIES, buildCustomTrip, getTodayDate, makeInitialTrip, STATUSES } from "./data/tripData.js";
 import { createPasswordUser } from "./lib/adminUsersRepository.js";
 import { ensureUserProfile, getCurrentSession, onAuthSessionChange, sendMagicLink, signInWithPassword, signOut } from "./lib/auth.js";
-import { acceptPendingTripInvite, acceptTripInvite, claimTripTraveler, createTripInvite, listTripCollaboration, prepareInviteSession, revokeTripInvite, updateTripTravelerName } from "./lib/collaborationRepository.js";
+import { acceptPendingTripInvite, acceptTripInvite, claimTripTraveler, createOwnTripTraveler, createTripInvite, listTripCollaboration, prepareInviteSession, revokeTripInvite, updateTripTravelerName } from "./lib/collaborationRepository.js";
 import { clearTripExpenses, deleteTripExpense, listTripExpenses, saveTripExpense, subscribeToExpenseChanges } from "./lib/expenseRepository.js";
 import { EXPENSE_SOURCE_TYPES, buildTravelerOptions, calculateExpenseSummary, createExpenseDraft, deriveExpenseSuggestions, getExpenseSourceKey, prepareExpenseForSave } from "./lib/expenses.js";
 import { downloadTripExport } from "./lib/export.js";
@@ -336,6 +336,16 @@ function findPreferredOwnerTraveler(travelers, profileId) {
   );
 }
 
+function getAccountDisplayName(user, fallback = "") {
+  const metadataName = user?.user_metadata?.display_name ?? user?.user_metadata?.name ?? "";
+  const emailName = String(user?.email ?? "").split("@")[0];
+  return String(fallback || metadataName || emailName || "Traveler").trim();
+}
+
+function isGenericTravelerName(name) {
+  return ["me", "traveler"].includes(String(name ?? "").trim().toLowerCase());
+}
+
 function App() {
   const [trip, setTrip] = useState(loadTrip);
   const [selectedDayId, setSelectedDayId] = useState(() => trip.days[0]?.id);
@@ -611,6 +621,10 @@ function App() {
     () => collaboration.members.find((member) => member.profileId === sessionUserId),
     [collaboration.members, sessionUserId]
   );
+  const accountDisplayName = useMemo(
+    () => getAccountDisplayName(session?.user, currentMember?.displayName),
+    [currentMember?.displayName, session?.user]
+  );
   const currentTraveler = useMemo(
     () => collaboration.travelers.find((traveler) => traveler.profileId === sessionUserId),
     [collaboration.travelers, sessionUserId]
@@ -785,6 +799,12 @@ function App() {
     let isCurrent = true;
     setOwnerTravelerLink({ tripId: selectedTripId, status: "linking", message: "" });
     claimTripTraveler(targetTraveler.id)
+      .then(() => {
+        if (isGenericTravelerName(targetTraveler.name) && accountDisplayName) {
+          return updateTripTravelerName(targetTraveler.id, accountDisplayName);
+        }
+        return undefined;
+      })
       .then(() => refreshCollaboration({ silent: true }))
       .then(() => {
         if (isCurrent) {
@@ -800,7 +820,7 @@ function App() {
     return () => {
       isCurrent = false;
     };
-  }, [ownerNeedsTravelerIdentity, selectedTripId, sessionUserId, ownerTravelerLink.tripId, ownerTravelerLink.status, collaboration.travelers]);
+  }, [accountDisplayName, ownerNeedsTravelerIdentity, selectedTripId, sessionUserId, ownerTravelerLink.tripId, ownerTravelerLink.status, collaboration.travelers]);
 
   useEffect(() => {
     if (!sessionUserId || !selectedTripId || !tripLoaded) {
@@ -1020,6 +1040,26 @@ function App() {
     }
   }
 
+  async function handleCreateOwnTraveler() {
+    if (!selectedTripId) {
+      return;
+    }
+
+    try {
+      await createOwnTripTraveler({ tripId: selectedTripId, name: accountDisplayName });
+      const [remoteTrip, nextCollaboration] = await Promise.all([
+        loadRemoteTrip(selectedTripId),
+        listTripCollaboration(selectedTripId)
+      ]);
+      skipNextSaveRef.current = true;
+      setTrip(remoteTrip);
+      setCollaboration(nextCollaboration);
+      showToast({ type: "success", message: "Traveler created" });
+    } catch (error) {
+      showToast({ type: "error", message: error.message });
+    }
+  }
+
   async function handleInviteWelcomeContinue(name) {
     if (!currentTraveler || !selectedTripId) {
       setInviteWelcomeDismissedTripId(selectedTripId);
@@ -1160,7 +1200,7 @@ function App() {
 
     setTripListStatus("loading");
     try {
-      const nextTripId = await createTripFromPayload({ ...payload, dateRangeLabel: formatTripRange(deriveTripDays(payload.days)) }, session.user.id);
+      const nextTripId = await createTripFromPayload({ ...payload, dateRangeLabel: formatTripRange(deriveTripDays(payload.days)) }, session.user.id, getAccountDisplayName(session.user));
       await refreshTripSummaries({ silent: true });
       selectTrip(nextTripId);
       showToast({ type: "success", message: "Trip created" });
@@ -1175,7 +1215,7 @@ function App() {
   }
 
   function createCustomTrip(formValues) {
-    const travelerName = formValues.travelerName?.trim() || "Me";
+    const travelerName = formValues.travelerName?.trim() || getAccountDisplayName(session?.user);
     const payload = buildCustomTrip({
       name: formValues.name,
       startDate: formValues.startDate,
@@ -2015,6 +2055,7 @@ function App() {
         />
         {isCreateTripOpen ? (
           <CreateTripModal
+            defaultTravelerName={getAccountDisplayName(session.user)}
             onCancel={() => setIsCreateTripOpen(false)}
             onCreate={createCustomTrip}
           />
@@ -2314,9 +2355,11 @@ function App() {
           tripName={trip.name}
           travelers={collaboration.travelers}
           currentUserId={sessionUserId}
+          defaultTravelerName={accountDisplayName}
           isOwnerRecovery={ownerNeedsTravelerIdentity}
           recoveryMessage={ownerTravelerLink.message}
           onClaimTraveler={handleClaimTraveler}
+          onCreateOwnTraveler={handleCreateOwnTraveler}
         />
       ) : null}
     </div>
@@ -2499,8 +2542,9 @@ function TripPicker({
   );
 }
 
-function CreateTripModal({ onCancel, onCreate }) {
+function CreateTripModal({ defaultTravelerName = "Traveler", onCancel, onCreate }) {
   const today = getTodayDate();
+  const initialTravelerName = String(defaultTravelerName ?? "").trim() || "Traveler";
   const {
     formState: { errors },
     getValues,
@@ -2514,7 +2558,7 @@ function CreateTripModal({ onCancel, onCreate }) {
       startDate: today,
       endDate: today,
       city: "",
-      travelerName: "Me"
+      travelerName: initialTravelerName
     }
   });
   const [endDateMin, setEndDateMin] = useState(today);
@@ -2562,7 +2606,7 @@ function CreateTripModal({ onCancel, onCreate }) {
             <input {...register("city")} placeholder="Optional" />
           </label>
           <label>
-            Default traveler
+            Your traveler name
             <input {...register("travelerName")} />
             {errors.travelerName ? <small className="form-error">{errors.travelerName.message}</small> : null}
           </label>
@@ -4221,11 +4265,12 @@ function InviteWelcomeModal({ tripName, travelerName, onContinue }) {
   );
 }
 
-function TravelerIdentityPrompt({ tripName, travelers, currentUserId, isOwnerRecovery = false, recoveryMessage = "", onClaimTraveler }) {
+function TravelerIdentityPrompt({ tripName, travelers, currentUserId, defaultTravelerName = "Traveler", isOwnerRecovery = false, recoveryMessage = "", onClaimTraveler, onCreateOwnTraveler }) {
   const title = isOwnerRecovery ? "Link your organizer profile" : "Which traveler are you?";
   const helper = isOwnerRecovery
     ? "We could not link your organizer account automatically. Choose who you are so votes and split expenses stay under your account."
     : `Choose your traveler for ${tripName || "this trip"} so votes and split expenses attach to the right person.`;
+  const hasAvailableTraveler = travelers.some((traveler) => !traveler.profileId || traveler.profileId === currentUserId);
 
   return (
     <div className="dialog-backdrop" role="presentation">
@@ -4262,8 +4307,13 @@ function TravelerIdentityPrompt({ tripName, travelers, currentUserId, isOwnerRec
           })}
         </div>
 
-        {!travelers.some((traveler) => !traveler.profileId || traveler.profileId === currentUserId) ? (
-          <p className="expense-empty">All travelers are already linked. Ask the trip owner to add or free up a traveler.</p>
+        {!hasAvailableTraveler ? (
+          <div className="expense-empty identity-empty-action">
+            <p>No open traveler is available for your account yet.</p>
+            <button className="primary-button compact-action" type="button" onClick={onCreateOwnTraveler}>
+              Create traveler for {defaultTravelerName}
+            </button>
+          </div>
         ) : null}
       </div>
     </div>

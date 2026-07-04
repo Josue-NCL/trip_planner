@@ -9,6 +9,16 @@ type AdminUserRequest = {
   displayName?: string;
 };
 
+type SupabaseAdminClient = ReturnType<typeof createServiceSupabaseClient>;
+
+type TripTravelerRow = {
+  id: number;
+  client_id: string;
+  name: string;
+  profile_id: string | null;
+  sort_order: number | null;
+};
+
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -60,12 +70,15 @@ Deno.serve(async (request) => {
     }, { onConflict: "trip_id,profile_id" });
     throwIfError(memberError, "Could not add this user to the trip.");
 
+    const traveler = await ensureUserTraveler(admin, tripId, userId, displayName);
+
     return jsonResponse({
       status: "ready",
       userId,
       email,
       displayName,
       role,
+      traveler,
       tripId
     });
   } catch (error) {
@@ -104,7 +117,7 @@ function createServiceSupabaseClient() {
   });
 }
 
-async function assertTripOwner(admin: ReturnType<typeof createClient>, tripId: number, profileId: string) {
+async function assertTripOwner(admin: SupabaseAdminClient, tripId: number, profileId: string) {
   const { data, error } = await admin
     .from("trip_members")
     .select("role")
@@ -118,7 +131,7 @@ async function assertTripOwner(admin: ReturnType<typeof createClient>, tripId: n
   }
 }
 
-async function upsertPasswordUser(admin: ReturnType<typeof createClient>, email: string, password: string, displayName: string) {
+async function upsertPasswordUser(admin: SupabaseAdminClient, email: string, password: string, displayName: string) {
   const existingUser = await findUserByEmail(admin, email);
 
   if (existingUser?.id) {
@@ -150,7 +163,7 @@ async function upsertPasswordUser(admin: ReturnType<typeof createClient>, email:
   return data.user.id;
 }
 
-async function findUserByEmail(admin: ReturnType<typeof createClient>, email: string) {
+async function findUserByEmail(admin: SupabaseAdminClient, email: string) {
   const { data, error } = await admin.auth.admin.listUsers({
     page: 1,
     perPage: 1000
@@ -158,6 +171,76 @@ async function findUserByEmail(admin: ReturnType<typeof createClient>, email: st
   throwIfError(error, "Could not check existing users.");
 
   return data.users.find((user) => user.email?.trim().toLowerCase() === email) ?? null;
+}
+
+async function ensureUserTraveler(admin: SupabaseAdminClient, tripId: number, profileId: string, displayName: string) {
+  const { data: travelers, error } = await admin
+    .from("trip_travelers")
+    .select("id, client_id, name, profile_id, sort_order")
+    .eq("trip_id", tripId)
+    .order("sort_order");
+  throwIfError(error, "Could not load trip travelers.");
+
+  const travelerRows = (travelers ?? []) as TripTravelerRow[];
+  const existingLinkedTraveler = travelerRows.find((traveler) => traveler.profile_id === profileId);
+  if (existingLinkedTraveler) {
+    return existingLinkedTraveler;
+  }
+
+  const matchingOpenTraveler = travelerRows.find((traveler) => !traveler.profile_id && traveler.name.trim().toLowerCase() === displayName.trim().toLowerCase());
+  if (matchingOpenTraveler) {
+    const { data, error: updateError } = await admin
+      .from("trip_travelers")
+      .update({ profile_id: profileId })
+      .eq("id", matchingOpenTraveler.id)
+      .select("id, client_id, name, profile_id, sort_order")
+      .single();
+    throwIfError(updateError, "Could not link this traveler.");
+    return data;
+  }
+
+  const travelerName = getAvailableTravelerName(displayName, travelerRows);
+  const sortOrder = travelerRows.reduce((max, traveler) => Math.max(max, Number(traveler.sort_order) || 0), -1) + 1;
+  const { data, error: insertError } = await admin
+    .from("trip_travelers")
+    .insert({
+      trip_id: tripId,
+      client_id: createTravelerClientId(travelerName),
+      name: travelerName,
+      profile_id: profileId,
+      sort_order: sortOrder
+    })
+    .select("id, client_id, name, profile_id, sort_order")
+    .single();
+  throwIfError(insertError, "Could not create this traveler.");
+
+  return data;
+}
+
+function getAvailableTravelerName(name: string, travelers: Array<{ name: string }>) {
+  const baseName = name.trim() || "Traveler";
+  const usedNames = new Set(travelers.map((traveler) => traveler.name.trim().toLowerCase()));
+  if (!usedNames.has(baseName.toLowerCase())) {
+    return baseName;
+  }
+
+  for (let suffix = 2; suffix < 100; suffix += 1) {
+    const candidate = `${baseName} ${suffix}`;
+    if (!usedNames.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+
+  return `${baseName} ${Date.now()}`;
+}
+
+function createTravelerClientId(name: string) {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return `traveler-${slug || "guest"}-${Date.now().toString(36)}`;
 }
 
 function normalizeEmail(email: unknown) {

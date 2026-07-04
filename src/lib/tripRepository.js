@@ -68,7 +68,7 @@ export async function loadRemoteTrip(tripId) {
   });
 }
 
-export async function createTripFromPayload(payload, ownerId) {
+export async function createTripFromPayload(payload, ownerId, ownerName = "") {
   const client = requireSupabase();
   const rows = buildTripRows(null, payload);
   const { data: trip, error: tripError } = await client
@@ -97,7 +97,7 @@ export async function createTripFromPayload(payload, ownerId) {
   }
 
   await replaceTripPayload(trip.id, payload);
-  await linkOwnerTraveler(trip.id, ownerId);
+  await linkOwnerTraveler(trip.id, ownerId, ownerName);
   return trip.id;
 }
 
@@ -128,7 +128,7 @@ export function subscribeToTripChanges(tripId, onChange) {
   };
 }
 
-async function linkOwnerTraveler(tripId, ownerId) {
+async function linkOwnerTraveler(tripId, ownerId, ownerName = "") {
   const client = requireSupabase();
   const { data: travelers, error: travelersError } = await client
     .from("trip_travelers")
@@ -144,7 +144,10 @@ async function linkOwnerTraveler(tripId, ownerId) {
 
   const { error } = await client
     .from("trip_travelers")
-    .update({ profile_id: ownerId })
+    .update({
+      profile_id: ownerId,
+      ...(shouldReplaceGenericTravelerName(targetTraveler.name, ownerName) ? { name: ownerName.trim() } : {})
+    })
     .eq("id", targetTraveler.id);
   throwIfError(error);
 
@@ -154,6 +157,12 @@ async function linkOwnerTraveler(tripId, ownerId) {
     .eq("traveler_id", targetTraveler.id)
     .is("profile_id", null);
   throwIfError(votesError);
+}
+
+function shouldReplaceGenericTravelerName(currentName, nextName) {
+  const current = String(currentName ?? "").trim().toLowerCase();
+  const next = String(nextName ?? "").trim();
+  return Boolean(next) && ["me", "traveler"].includes(current) && next.toLowerCase() !== current;
 }
 
 function findPreferredOwnerTraveler(travelers, ownerId) {
