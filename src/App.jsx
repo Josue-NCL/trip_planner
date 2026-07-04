@@ -70,6 +70,7 @@ const TRIP_TIME_GRID_ROW_HEIGHT = 60;
 const ASSET_BASE = `${import.meta.env.BASE_URL}assets/`;
 const ICON_BASE = `${import.meta.env.BASE_URL}assets/icons/`;
 const FLAG_ASSET = `${ASSET_BASE}japan-flag-title.png`;
+const GENERIC_TRIP_MARK_ASSET = `${ICON_BASE}tag-priority-generic.png`;
 const FOOTER_STRIP_ASSET = `${ASSET_BASE}japan-footer-strip.png`;
 const GOOGLE_MAPS_EMBED_KEY = import.meta.env.VITE_GOOGLE_MAPS_EMBED_KEY ?? "";
 const LOCAL_REALTIME_ECHO_SUPPRESSION_MS = 4000;
@@ -140,6 +141,7 @@ function buildTagAssets(suffix = "") {
       link: `${ICON_BASE}tag-link${suffix}.png`,
       map: `${ICON_BASE}tag-map-pin${suffix}.png`,
       notes: `${ICON_BASE}tag-notes${suffix}.png`,
+      priority: `${ICON_BASE}tag-priority${suffix}.png`,
       reservation: `${ICON_BASE}tag-reservation${suffix}.png`
     }
   };
@@ -566,6 +568,7 @@ function App() {
   const sortedDays = useMemo(() => deriveTripDays(trip.days), [trip.days]);
   const mapsProfile = useMemo(() => getTripMapsProfile(trip, sortedDays), [trip, sortedDays]);
   const tagAssets = useMemo(() => getTagAssetsForMapsProfile(mapsProfile), [mapsProfile.id]);
+  const tripMarkAsset = useMemo(() => getTripMarkAssetForMapsProfile(mapsProfile), [mapsProfile.id]);
 
   const selectedDay = useMemo(
     () => sortedDays.find((day) => day.id === selectedDayId) ?? sortedDays[0],
@@ -2029,7 +2032,7 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-block">
-          <img className="title-flag" src={FLAG_ASSET} alt="" aria-hidden="true" />
+          <img className="title-flag" src={tripMarkAsset} alt="" aria-hidden="true" />
           <div className="trip-name-wrap">
             <input
               className="trip-title-input"
@@ -2326,7 +2329,7 @@ function AuthScreen({ email, password, message, onEmailChange, onPasswordChange,
     <main className="auth-shell auth-landing-shell">
       <section className="auth-landing" aria-labelledby="auth-title">
         <div className="auth-landing-brand">
-          <img className="title-flag" src={FLAG_ASSET} alt="" aria-hidden="true" />
+          <img className="title-flag" src={GENERIC_TRIP_MARK_ASSET} alt="" aria-hidden="true" />
           <strong>Japan 2026</strong>
         </div>
 
@@ -2339,7 +2342,7 @@ function AuthScreen({ email, password, message, onEmailChange, onPasswordChange,
           <div className="auth-preview-card" aria-hidden="true">
             <div className="auth-preview-top">
               <span>
-                <img src={FLAG_ASSET} alt="" />
+                <img src={GENERIC_TRIP_MARK_ASSET} alt="" />
                 Japan 2026
               </span>
               <strong>Synced</strong>
@@ -2443,7 +2446,7 @@ function TripPicker({
       <section className="trip-picker" aria-labelledby="trip-picker-title">
         <header className="trip-picker-header">
           <div className="auth-brand">
-            <img className="title-flag" src={FLAG_ASSET} alt="" aria-hidden="true" />
+            <img className="title-flag" src={GENERIC_TRIP_MARK_ASSET} alt="" aria-hidden="true" />
             <div>
               <p>{email}</p>
               <h1 id="trip-picker-title">Choose a trip</h1>
@@ -2582,7 +2585,7 @@ function ConfigState({ title, message, actionLabel, onAction }) {
     <main className="auth-shell">
       <section className="auth-panel" aria-labelledby="config-title">
         <div className="auth-brand">
-          <img className="title-flag" src={FLAG_ASSET} alt="" aria-hidden="true" />
+          <img className="title-flag" src={GENERIC_TRIP_MARK_ASSET} alt="" aria-hidden="true" />
           <div>
             <p>Japan 2026</p>
             <h1 id="config-title">{title}</h1>
@@ -6823,6 +6826,10 @@ function getStatusAsset(status, tagAssets = DEFAULT_TAG_ASSETS) {
 
 function getTagAssetsForMapsProfile(mapsProfile) {
   return mapsProfile?.id === "japan" ? TAG_ASSET_THEMES.japan : TAG_ASSET_THEMES.generic;
+}
+
+function getTripMarkAssetForMapsProfile(mapsProfile) {
+  return mapsProfile?.id === "japan" ? FLAG_ASSET : GENERIC_TRIP_MARK_ASSET;
 }
 
 function useTagAssets() {
