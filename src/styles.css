@@ -3077,6 +3077,24 @@ textarea:focus {
   font-weight: 700;
 }
 
+.traveler-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.traveler-rename-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.traveler-rename-form input {
+  min-width: 0;
+}
+
 .sharing-list {
   display: grid;
   gap: 8px;
@@ -5652,9 +5670,18 @@ textarea:focus {
     height: 40px;
   }
 
+  .traveler-card-actions,
   .traveler-card .compact-action {
     grid-column: 2;
     justify-self: start;
+  }
+
+  .traveler-card-actions {
+    justify-content: flex-start;
+  }
+
+  .traveler-rename-form {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

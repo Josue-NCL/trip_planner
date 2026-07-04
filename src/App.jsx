@@ -1040,6 +1040,34 @@ function App() {
     }
   }
 
+  async function handleRenameTraveler(travelerId, name) {
+    if (!selectedTripId) {
+      return false;
+    }
+
+    const nextName = String(name ?? "").trim();
+    if (!nextName) {
+      showToast({ type: "error", message: "Enter a traveler name." });
+      return false;
+    }
+
+    try {
+      await updateTripTravelerName(travelerId, nextName);
+      const [remoteTrip, nextCollaboration] = await Promise.all([
+        loadRemoteTrip(selectedTripId),
+        listTripCollaboration(selectedTripId)
+      ]);
+      skipNextSaveRef.current = true;
+      setTrip(remoteTrip);
+      setCollaboration(nextCollaboration);
+      showToast({ type: "success", message: "Traveler name updated" });
+      return true;
+    } catch (error) {
+      showToast({ type: "error", message: error.message });
+      return false;
+    }
+  }
+
   async function handleCreateOwnTraveler() {
     if (!selectedTripId) {
       return;
@@ -2338,6 +2366,7 @@ function App() {
           onCopyInvite={copyLatestInvite}
           onRevokeInvite={handleRevokeInvite}
           onClaimTraveler={handleClaimTraveler}
+          onRenameTraveler={handleRenameTraveler}
           onClose={() => setIsSharingOpen(false)}
         />
       ) : null}
@@ -4824,9 +4853,11 @@ function SharingModal({
   onCopyInvite,
   onRevokeInvite,
   onClaimTraveler,
+  onRenameTraveler,
   onClose
 }) {
   const [activePeopleTab, setActivePeopleTab] = useState("share");
+  const [travelerRenameDraft, setTravelerRenameDraft] = useState(null);
   const currentRole = formatRoleLabel(currentMember?.role ?? "editor");
   const {
     formState: { errors: inviteErrors, isSubmitting: isInviteSubmitting },
@@ -4876,6 +4907,18 @@ function SharingModal({
         password: "",
         role: formValues.role
       });
+    }
+  }
+
+  async function handleTravelerRenameSubmit(event) {
+    event.preventDefault();
+    if (!travelerRenameDraft) {
+      return;
+    }
+
+    const didRename = await onRenameTraveler(travelerRenameDraft.id, travelerRenameDraft.name);
+    if (didRename) {
+      setTravelerRenameDraft(null);
     }
   }
 
@@ -5059,6 +5102,8 @@ function SharingModal({
                 {collaboration.travelers.map((traveler) => {
                   const isCurrentUser = traveler.profileId === currentUserId;
                   const canChooseTraveler = !traveler.profileId;
+                  const canRenameTraveler = isCurrentUser || canManage;
+                  const isRenamingTraveler = travelerRenameDraft?.id === traveler.id;
                   const accountLabel = traveler.email || (traveler.profileId && traveler.displayName !== traveler.name ? traveler.displayName : "");
                   return (
                     <article className={`traveler-card${isCurrentUser ? " is-current-user" : ""}`} key={traveler.id}>
@@ -5066,12 +5111,35 @@ function SharingModal({
                       <div className="traveler-card-main">
                         <h3>{traveler.name}</h3>
                         {accountLabel ? <p>{accountLabel}</p> : null}
+                        {isRenamingTraveler ? (
+                          <form className="traveler-rename-form" onSubmit={handleTravelerRenameSubmit}>
+                            <input
+                              value={travelerRenameDraft.name}
+                              aria-label={`Traveler name for ${traveler.name}`}
+                              onChange={(event) => setTravelerRenameDraft({ ...travelerRenameDraft, name: event.target.value })}
+                              autoFocus
+                            />
+                            <button className="primary-button compact-action" type="submit" disabled={!travelerRenameDraft.name.trim()}>
+                              Save
+                            </button>
+                            <button className="ghost-button compact-action" type="button" onClick={() => setTravelerRenameDraft(null)}>
+                              Cancel
+                            </button>
+                          </form>
+                        ) : null}
                       </div>
-                      {canChooseTraveler ? (
-                        <button className="ghost-button compact-action" type="button" onClick={() => onClaimTraveler(traveler.id)}>
-                          Choose
-                        </button>
-                      ) : null}
+                      <div className="traveler-card-actions">
+                        {canRenameTraveler && !isRenamingTraveler ? (
+                          <button className="ghost-button compact-action" type="button" onClick={() => setTravelerRenameDraft({ id: traveler.id, name: traveler.name })}>
+                            Edit name
+                          </button>
+                        ) : null}
+                        {canChooseTraveler ? (
+                          <button className="ghost-button compact-action" type="button" onClick={() => onClaimTraveler(traveler.id)}>
+                            Choose
+                          </button>
+                        ) : null}
+                      </div>
                     </article>
                   );
                 })}
