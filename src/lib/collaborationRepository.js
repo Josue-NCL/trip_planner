@@ -2,6 +2,7 @@ import { requireSupabase } from "./supabaseClient.js";
 import { buildTripInviteUrl } from "./url.js";
 
 const INVITE_TOKEN_BYTES = 32;
+const INVITE_ROLES = new Set(["editor", "viewer"]);
 
 export async function listTripCollaboration(tripId) {
   const client = requireSupabase();
@@ -64,19 +65,28 @@ export async function listTripCollaboration(tripId) {
   };
 }
 
-export async function createTripInvite({ tripId, email, travelerId, invitedBy }) {
+export async function createTripInvite({ tripId, email, role = "editor", invitedBy }) {
   const client = requireSupabase();
   const inviteToken = createInviteToken();
   const tokenHash = await sha256Hex(inviteToken);
   const normalizedEmail = normalizeEmail(email);
+  const normalizedRole = normalizeInviteRole(role);
+
+  throwIfError(
+    (await client
+      .from("trip_invitations")
+      .update({ status: "revoked" })
+      .eq("trip_id", tripId)
+      .eq("email", normalizedEmail)
+      .eq("status", "pending")).error
+  );
 
   const { data, error } = await client
     .from("trip_invitations")
     .insert({
       trip_id: tripId,
       email: normalizedEmail,
-      role: "editor",
-      traveler_id: travelerId,
+      role: normalizedRole,
       token_hash: tokenHash,
       invited_by: invitedBy,
       status: "pending"
@@ -111,11 +121,50 @@ export async function acceptTripInvite(inviteToken) {
   return data?.[0]?.trip_id ?? null;
 }
 
+export async function prepareInviteSession(inviteToken) {
+  const client = requireSupabase();
+  const { data, error } = await client.functions.invoke("invite-session", {
+    body: { inviteToken }
+  });
+  throwIfError(error);
+
+  if (data?.error) {
+    throw new Error(data.error.message ?? "Could not open this invite.");
+  }
+  if (!data?.email) {
+    throw new Error("Invite did not return an account email.");
+  }
+
+  return data;
+}
+
+export async function acceptPendingTripInvite() {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("accept_pending_trip_invite");
+  throwIfError(error);
+
+  return data?.[0]?.trip_id ?? null;
+}
+
 export async function claimTripTraveler(travelerId) {
   const client = requireSupabase();
   const { error } = await client.rpc("claim_trip_traveler", {
     target_traveler_id: travelerId
   });
+  throwIfError(error);
+}
+
+export async function updateTripTravelerName(travelerId, name) {
+  const client = requireSupabase();
+  const nextName = String(name ?? "").trim();
+  if (!nextName) {
+    throw new Error("Traveler name is required.");
+  }
+
+  const { error } = await client
+    .from("trip_travelers")
+    .update({ name: nextName })
+    .eq("id", travelerId);
   throwIfError(error);
 }
 
@@ -141,6 +190,14 @@ function buildInviteUrl(inviteToken) {
 
 function normalizeEmail(email) {
   return String(email ?? "").trim().toLowerCase();
+}
+
+function normalizeInviteRole(role) {
+  const value = String(role ?? "editor").trim().toLowerCase();
+  if (!INVITE_ROLES.has(value)) {
+    throw new Error("Choose a valid access level.");
+  }
+  return value;
 }
 
 function normalizeJoinedProfile(profile) {

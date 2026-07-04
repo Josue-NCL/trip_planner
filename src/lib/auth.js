@@ -23,9 +23,9 @@ export function onAuthSessionChange(callback) {
   return () => data.subscription.unsubscribe();
 }
 
-export async function sendMagicLink(email) {
+export async function sendMagicLink(email, options = {}) {
   const client = requireSupabase();
-  const redirectTo = buildCurrentTripUrl();
+  const redirectTo = buildCurrentTripUrl(options.inviteToken ? { invite: options.inviteToken } : {});
   const { error } = await client.auth.signInWithOtp({
     email,
     options: {
@@ -36,6 +36,20 @@ export async function sendMagicLink(email) {
   if (error) {
     throw error;
   }
+}
+
+export async function signInWithPassword(email, password) {
+  const client = requireSupabase();
+  const { data, error } = await client.auth.signInWithPassword({
+    email,
+    password
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  return data.session;
 }
 
 export async function signOut() {

@@ -1,10 +1,15 @@
 const configuredTripUrl = import.meta.env.VITE_PUBLIC_TRIP_URL;
 
-export function buildCurrentTripUrl() {
+export function buildCurrentTripUrl(searchParams = {}) {
   const url = getTripBaseUrl();
   const currentUrl = new URL(window.location.href);
   url.search = currentUrl.search;
   url.hash = currentUrl.hash;
+  Object.entries(searchParams).forEach(([key, value]) => {
+    if (value) {
+      url.searchParams.set(key, value);
+    }
+  });
   return url.toString();
 }
 

@@ -6,6 +6,9 @@ This guide covers the first safe set of JavaScript libraries added to the planne
 - `driver.js` for guided onboarding tours.
 - `fuse.js` for fuzzy search.
 - `zod` for trip data validation.
+- `react-hook-form` and `@hookform/resolvers` for form state and Zod-backed validation.
+- `dinero.js` for safe money values, formatting, and calculations.
+- `recharts` and `react-is` for lightweight React charts.
 - `date-fns` for date and time helpers.
 
 These packages are installed, but they should be adopted gradually. Do not refactor the whole planner at once. The app currently works by keeping one trip object in React state, saving it through `src/lib/tripRepository.js`, and preserving JSON import/export compatibility. Each rollout below keeps that shape intact.
@@ -14,9 +17,12 @@ These packages are installed, but they should be adopted gradually. Do not refac
 
 1. Add `sonner` first because it can replace the current custom toast timer code with minimal product risk.
 2. Add `zod` validation around import and mapper boundaries before changing data flows.
-3. Add `date-fns` helpers for schedule math without changing stored date or time formats.
-4. Add `fuse.js` search as a read-only derived view over `trip.ideas` and schedule items.
-5. Add `driver.js` after stable `data-tour` attributes exist in the UI.
+3. Add `react-hook-form` to one low-risk form at a time, using Zod schemas only at submit boundaries.
+4. Add `dinero.js` when expense tracking starts, keeping stored amounts as integers.
+5. Add `recharts` when the expenses dashboard needs simple visual summaries.
+6. Add `date-fns` helpers for schedule math without changing stored date or time formats.
+7. Add `fuse.js` search as a read-only derived view over `trip.ideas` and schedule items.
+8. Add `driver.js` after stable `data-tour` attributes exist in the UI.
 
 Run `pnpm build` after each step.
 
@@ -58,6 +64,68 @@ Good first target:
 - `src/lib/tripMappers.js`: add a development-only check that mapped rows still produce a valid trip object.
 
 Do not make validation stricter than the current UI. The goal is to catch broken files and mapper regressions, not block valid existing trip data.
+
+## React Hook Form
+
+Use `react-hook-form` to simplify form state, validation, dirty state, and submit handling. Pair it with `@hookform/resolvers/zod` only after the matching Zod schema exists.
+
+Safe implementation:
+
+- Start with a small isolated form, such as the invite form or new idea form.
+- Keep the existing submit handler behavior and state update logic at first.
+- Use `defaultValues` from the current React state shape.
+- Convert form values back into the same trip object fields the UI already stores.
+- Keep save/sync side effects in the existing app flow; the form should only collect and validate values.
+- Move one form at a time so regressions are easy to find.
+
+Good first targets:
+
+- Invite creation form because it has few fields and clear validation.
+- New idea form because it benefits from required title/category/status validation.
+- Schedule block form after time helpers exist in `src/lib/tripDates.js`.
+
+Do not convert every controlled input in `src/App.jsx` at once. Also do not let form schemas become a second data model; they should describe the same fields the planner already uses.
+
+## Dinero JS
+
+Use `dinero.js` for money math and display when expense tracking is implemented. It should not own the expense feature or the split logic.
+
+Safe implementation:
+
+- Store persisted money as integer minor units, such as yen for JPY or cents for USD.
+- Store the currency code next to the integer amount.
+- Use Dinero helpers in `src/lib/money.js` for parsing, adding, formatting, and splitting display values.
+- Keep expense ownership, participants, and reimbursement logic in a separate `src/lib/expenses.js` module.
+- Default to `JPY` for Japan trip expenses, but keep the data model currency-aware.
+
+Good first targets:
+
+- Convert an activity `cost` string into a proposed expense amount only when the user chooses to track it.
+- Format totals in the future expenses section.
+- Calculate each participant's share without using floating-point math.
+
+Do not replace the existing `cost` text fields immediately. Treat them as estimates until the user creates a real expense.
+
+## Recharts
+
+Use `recharts` for small dashboard visuals after the expenses data model exists. It should be a display layer only.
+
+Safe implementation:
+
+- Create focused chart components near the future expenses UI instead of putting chart code into data modules.
+- Feed charts derived arrays from `src/lib/expenses.js`, such as totals by category or totals by traveler.
+- Keep chart colors aligned with the existing app palette in `src/styles.css`.
+- Prefer compact charts that support quick scanning: small bars, donut-style pie, and simple daily spend trends.
+- Keep all numbers formatted through `src/lib/money.js` so labels and tooltips are consistent.
+
+Good first targets:
+
+- Spending by category.
+- Paid by traveler.
+- Daily tracked spending.
+- Owed/receivable by traveler.
+
+Do not use charts as the primary expense record. The expense list and settlement summary should stay readable without charts.
 
 ## Date FNS
 
@@ -158,5 +226,5 @@ After each library implementation pass:
 Rollback for unused first-wave libraries:
 
 ```sh
-pnpm remove sonner driver.js fuse.js zod date-fns
+pnpm remove sonner driver.js fuse.js zod date-fns react-hook-form @hookform/resolvers dinero.js recharts react-is
 ```

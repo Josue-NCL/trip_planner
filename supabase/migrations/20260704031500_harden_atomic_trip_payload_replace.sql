@@ -1,0 +1,6 @@
+-- The live harden_atomic_trip_payload_replace migration reapplied
+-- public.replace_trip_payload with the safety checks now present in
+-- 20260704031000_add_atomic_trip_payload_replace.sql.
+--
+-- This no-op marker keeps local migration history aligned without
+-- duplicating the full function body.

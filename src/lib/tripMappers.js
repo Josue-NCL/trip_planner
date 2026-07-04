@@ -21,6 +21,7 @@ export function mapRowsToTrip({ trip, travelers = [], days = [], scheduleItems =
   scheduleItems.forEach((item) => {
     const row = {
       id: item.client_id,
+      itemKind: item.item_kind ?? "activity",
       title: item.title,
       category: item.category,
       city: item.city,
@@ -31,6 +32,10 @@ export function mapRowsToTrip({ trip, travelers = [], days = [], scheduleItems =
       cost: item.cost,
       link: item.link,
       mapLink: item.map_link,
+      stayStartDayId: item.stay_start_day_client_id ?? "",
+      stayEndDayId: item.stay_end_day_client_id ?? "",
+      checkInTime: normalizeTime(item.check_in_time),
+      checkOutTime: normalizeTime(item.check_out_time),
       place: mapPlaceFromRow(item)
     };
     const dayItems = scheduleByDayId.get(String(item.trip_day_id)) ?? [];
@@ -43,6 +48,7 @@ export function mapRowsToTrip({ trip, travelers = [], days = [], scheduleItems =
     name: trip.name,
     dateRangeLabel: trip.date_range_label ?? "",
     travelers: travelerNames,
+    travelerClientIds: Object.fromEntries(travelerRows.map((traveler) => [traveler.name, traveler.client_id])),
     days: [...days].sort((a, b) => a.day_number - b.day_number).map((day) => ({
       id: day.client_id,
       date: day.trip_date,
@@ -76,9 +82,10 @@ export function mapRowsToTrip({ trip, travelers = [], days = [], scheduleItems =
 }
 
 export function buildTripRows(tripId, trip) {
+  const travelerClientIds = trip.travelerClientIds ?? {};
   const travelers = normalizeTravelerNames(trip.travelers).map((name, index) => ({
     trip_id: tripId,
-    client_id: travelerClientId(name),
+    client_id: travelerClientIds[name] ?? travelerClientId(name),
     name,
     sort_order: index
   }));
@@ -97,7 +104,9 @@ export function buildTripRows(tripId, trip) {
   const scheduleItems = [];
   (trip.days ?? []).forEach((day) => {
     (day.schedule ?? []).forEach((item, index) => {
+      const itemKind = item.itemKind ?? (item.category === "Hotel" || item.stayStartDayId || item.stayEndDayId || item.checkInTime || item.checkOutTime ? "stay" : "activity");
       scheduleItems.push({
+        item_kind: itemKind,
         day_client_id: String(day.id ?? day.date),
         client_id: String(item.id ?? `schedule-${Date.now()}-${index}`),
         title: item.title?.trim() || "Untitled plan",
@@ -110,6 +119,10 @@ export function buildTripRows(tripId, trip) {
         cost: item.cost ?? "",
         link: item.link ?? "",
         map_link: item.mapLink ?? "",
+        stay_start_day_client_id: item.stayStartDayId ?? "",
+        stay_end_day_client_id: item.stayEndDayId ?? "",
+        check_in_time: item.checkInTime || null,
+        check_out_time: item.checkOutTime || null,
         ...mapPlaceToRow(item.place),
         sort_order: index
       });

@@ -1,6 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.47.10";
 import { corsHeaders, errorResponse, jsonResponse } from "../_shared/cors.ts";
-import { buildGoogleDirectionsUrl, computeRouteMatrix, type RouteStop } from "../_shared/googleMaps.ts";
+import { buildGoogleDirectionsUrl, computeRouteDetails, computeRouteMatrix, type RouteStop } from "../_shared/googleMaps.ts";
 
 type RouteDayRequest = {
   tripId?: number;
@@ -8,6 +8,8 @@ type RouteDayRequest = {
   ideaClientIds?: string[];
   travelMode?: "TRANSIT" | "WALK" | "DRIVE";
   returnToBase?: boolean;
+  countryName?: string;
+  timezoneOffset?: string;
 };
 
 type MatrixEntry = {
@@ -25,6 +27,7 @@ type RouteInput =
     stops: RouteStop[];
     scheduledStopIds: string[];
     ideaStopIds: string[];
+    dayDate: string;
     warnings: string[];
     missing: Array<Record<string, unknown>>;
   }
@@ -37,6 +40,7 @@ type RouteInput =
 type TripDayRow = {
   id: number;
   client_id: string;
+  trip_date: string;
   city: string;
   base_place_name: string | null;
   base_latitude: number | null;
@@ -46,8 +50,61 @@ type TripDayRow = {
 type PlaceRow = {
   client_id: string;
   title: string;
+  start_time?: string | null;
+  duration_minutes?: number | null;
   latitude: number | null;
   longitude: number | null;
+};
+
+type RouteRecommendation = {
+  routeOrder: string[];
+  stops: RouteStop[];
+  recommendations: Array<Record<string, unknown>>;
+  totalTravelMinutes: number | null;
+  googleMapsUrl: string;
+  warnings: string[];
+};
+
+type DetailedRouteLeg = {
+  originStopId: string;
+  destinationStopId: string;
+  originTitle: string;
+  destinationTitle: string;
+  summary: string;
+  durationMinutes: number | null;
+  distanceMeters: number;
+  departureTime: string;
+  arrivalTime: string;
+  googleMapsUrl: string;
+  steps: DetailedRouteStep[];
+};
+
+type DetailedRouteStep = {
+  type: string;
+  instruction: string;
+  durationMinutes: number | null;
+  distanceMeters: number;
+  fromName?: string;
+  toName?: string;
+  transit: {
+    lineName: string;
+    lineShortName: string;
+    headsign: string;
+    vehicleType: string;
+    departureStop: string;
+    arrivalStop: string;
+    departureTime: string;
+    arrivalTime: string;
+    stopCount: number | null;
+    tripShortText: string;
+  } | null;
+};
+
+type LegTiming = {
+  request: {
+    departureTime?: string;
+    arrivalTime?: string;
+  };
 };
 
 Deno.serve(async (request) => {
@@ -70,7 +127,6 @@ Deno.serve(async (request) => {
     if (!apiKey) {
       return errorResponse("GOOGLE_MAPS_SERVER_KEY is not configured in Supabase secrets.", 500, "missing_google_key");
     }
-
     const supabase = createUserSupabaseClient(request);
     const { data: userResult, error: userError } = await supabase.auth.getUser();
     if (userError || !userResult.user) {
@@ -82,22 +138,58 @@ Deno.serve(async (request) => {
       return jsonResponse(routeInput);
     }
 
-    const matrix = await computeRouteMatrix(apiKey, routeInput.stops, payload.travelMode ?? "TRANSIT") as MatrixEntry[];
-    const matrixLookup = buildMatrixLookup(matrix);
-    const recommendation = buildRecommendation({
+    const requestedTravelMode = payload.travelMode ?? "TRANSIT";
+    let effectiveTravelMode = requestedTravelMode;
+    const matrix = await computeRouteMatrix(apiKey, routeInput.stops, requestedTravelMode) as MatrixEntry[];
+    let matrixLookup = buildMatrixLookup(matrix);
+    let recommendation = buildRecommendation({
       stops: routeInput.stops,
       scheduledStopIds: routeInput.scheduledStopIds,
       ideaStopIds: routeInput.ideaStopIds,
       matrixLookup,
       returnToBase: payload.returnToBase ?? true,
-      warnings: routeInput.warnings
+      warnings: [...routeInput.warnings]
+    });
+
+    if (requestedTravelMode === "TRANSIT" && recommendation.totalTravelMinutes == null) {
+      effectiveTravelMode = "WALK";
+      const fallbackMatrix = await computeRouteMatrix(apiKey, routeInput.stops, effectiveTravelMode) as MatrixEntry[];
+      matrixLookup = buildMatrixLookup(fallbackMatrix);
+      recommendation = buildRecommendation({
+        stops: routeInput.stops,
+        scheduledStopIds: routeInput.scheduledStopIds,
+        ideaStopIds: routeInput.ideaStopIds,
+        matrixLookup,
+        returnToBase: payload.returnToBase ?? true,
+        warnings: [
+          ...routeInput.warnings,
+          transitFallbackMessage(payload.countryName)
+        ]
+      });
+    }
+
+    const detailedRoute = await buildDetailedRoute({
+      apiKey,
+      routeStops: recommendation.stops,
+      travelMode: requestedTravelMode,
+      fallbackTravelMode: effectiveTravelMode,
+      dayDate: routeInput.dayDate,
+      timezoneOffset: sanitizeTimezoneOffset(payload.timezoneOffset) ?? "+09:00",
+      countryName: payload.countryName?.trim() || "Japan",
+      matrixLookup,
+      allStops: routeInput.stops,
+      warnings: recommendation.warnings
     });
 
     return jsonResponse({
       status: "ok",
-      travelMode: payload.travelMode ?? "TRANSIT",
+      travelMode: detailedRoute.travelMode,
+      requestedTravelMode,
       base: routeInput.stops[0],
-      ...recommendation
+      ...recommendation,
+      totalTravelMinutes: detailedRoute.totalTravelMinutes ?? recommendation.totalTravelMinutes,
+      legs: detailedRoute.legs,
+      warnings: detailedRoute.warnings
     });
   } catch (error) {
     return errorResponse(error instanceof Error ? error.message : "Could not build this route.", 500, "route_failed");
@@ -186,17 +278,21 @@ async function loadRouteInput(supabase: ReturnType<typeof createClient<any>>, pa
   const dayRow = day as TripDayRow;
   const baseStop = {
     id: `base:${dayRow.client_id}`,
-    title: dayRow.base_place_name || dayRow.city || "Day base",
-    latitude: dayRow.base_latitude as number,
-    longitude: dayRow.base_longitude as number
-  };
+      title: dayRow.base_place_name || dayRow.city || "Day base",
+      latitude: dayRow.base_latitude as number,
+      longitude: dayRow.base_longitude as number,
+      startTime: "09:00",
+      durationMinutes: 0
+    };
   const scheduledStops = scheduleRows
     .filter((item) => hasCoordinates(item as unknown as Record<string, unknown>))
     .map((item) => ({
       id: `schedule:${item.client_id}`,
       title: item.title,
       latitude: item.latitude as number,
-      longitude: item.longitude as number
+      longitude: item.longitude as number,
+      startTime: normalizeTime(item.start_time),
+      durationMinutes: Number(item.duration_minutes) || 0
     }));
   const ideaStops = ideaRows
     .filter((idea) => hasCoordinates(idea as unknown as Record<string, unknown>))
@@ -221,6 +317,7 @@ async function loadRouteInput(supabase: ReturnType<typeof createClient<any>>, pa
     stops,
     scheduledStopIds: scheduledStops.map((stop) => stop.id),
     ideaStopIds: ideaStops.map((stop) => stop.id),
+    dayDate: dayRow.trip_date,
     warnings,
     missing
   };
@@ -240,7 +337,7 @@ function buildRecommendation({
   matrixLookup: Map<string, { minutes: number; meters: number }>;
   returnToBase: boolean;
   warnings: string[];
-}) {
+}): RouteRecommendation {
   const stopById = new Map(stops.map((stop) => [stop.id, stop]));
   const routeOrder = [stops[0].id, ...scheduledStopIds];
   const recommendations = [];
@@ -276,20 +373,334 @@ function buildRecommendation({
   }
 
   const routeStops = routeOrder.map((stopId) => stopById.get(stopId)).filter(Boolean) as RouteStop[];
+  let missingTravelLegs = 0;
   const totalTravelMinutes = routeOrder.slice(1).reduce((total, stopId, index) => {
     const previousStopId = routeOrder[index];
     const travel = getTravel(matrixLookup, stops, previousStopId, stopId);
-    return Number.isFinite(travel.minutes) ? total + travel.minutes : total;
+    if (!Number.isFinite(travel.minutes)) {
+      missingTravelLegs += 1;
+      return total;
+    }
+    return total + travel.minutes;
   }, 0);
+  if (missingTravelLegs) {
+    warnings.push(`Google Routes did not return travel time for ${missingTravelLegs} route leg${missingTravelLegs === 1 ? "" : "s"}.`);
+  }
 
   return {
     routeOrder,
     stops: routeStops,
     recommendations,
-    totalTravelMinutes: Math.round(totalTravelMinutes),
+    totalTravelMinutes: missingTravelLegs ? null : Math.round(totalTravelMinutes),
     googleMapsUrl: buildGoogleDirectionsUrl(routeStops),
     warnings
   };
+}
+
+async function buildDetailedRoute({
+  apiKey,
+  routeStops,
+  travelMode,
+  fallbackTravelMode,
+  dayDate,
+  timezoneOffset,
+  countryName,
+  matrixLookup,
+  allStops,
+  warnings
+}: {
+  apiKey: string;
+  routeStops: RouteStop[];
+  travelMode: string;
+  fallbackTravelMode: string;
+  dayDate: string;
+  timezoneOffset: string;
+  countryName: string;
+  matrixLookup: Map<string, { minutes: number; meters: number }>;
+  allStops: RouteStop[];
+  warnings: string[];
+}) {
+  const routeWarnings = [...warnings];
+  let effectiveTravelMode = travelMode;
+  let legs = await buildDetailedLegs({
+    apiKey,
+    routeStops,
+    travelMode,
+    dayDate,
+    timezoneOffset,
+    matrixLookup,
+    allStops,
+    warnings: routeWarnings
+  });
+
+  if (travelMode === "TRANSIT" && !legs.some((leg) => leg.steps.some((step) => step.transit))) {
+    const fallbackWarnings = [
+      ...warnings.filter((warning) => !warning.includes("Transit travel times were unavailable")),
+      transitDetailsFallbackMessage(countryName)
+    ];
+    const fallbackLegs = await buildDetailedLegs({
+      apiKey,
+      routeStops,
+      travelMode: fallbackTravelMode === "TRANSIT" ? "WALK" : fallbackTravelMode,
+      dayDate,
+      timezoneOffset,
+      matrixLookup,
+      allStops,
+      warnings: fallbackWarnings
+    });
+    if (fallbackLegs.some((leg) => leg.durationMinutes != null)) {
+      effectiveTravelMode = fallbackTravelMode === "TRANSIT" ? "WALK" : fallbackTravelMode;
+      legs = fallbackLegs;
+      routeWarnings.splice(0, routeWarnings.length, ...fallbackWarnings);
+    }
+  }
+
+  const legMinutes = legs.map((leg) => leg.durationMinutes);
+  let totalTravelMinutes: number | null = null;
+  if (legMinutes.every((minutes) => Number.isFinite(minutes))) {
+    totalTravelMinutes = 0;
+    for (const minutes of legMinutes) {
+      totalTravelMinutes += Number(minutes);
+    }
+  }
+
+  return {
+    travelMode: effectiveTravelMode,
+    legs,
+    totalTravelMinutes,
+    warnings: routeWarnings
+  };
+}
+
+async function buildDetailedLegs({
+  apiKey,
+  routeStops,
+  travelMode,
+  dayDate,
+  timezoneOffset,
+  matrixLookup,
+  allStops,
+  warnings
+}: {
+  apiKey: string;
+  routeStops: RouteStop[];
+  travelMode: string;
+  dayDate: string;
+  timezoneOffset: string;
+  matrixLookup: Map<string, { minutes: number; meters: number }>;
+  allStops: RouteStop[];
+  warnings: string[];
+}) {
+  const legs: DetailedRouteLeg[] = [];
+  let detailFailureCount = 0;
+
+  for (let index = 0; index < routeStops.length - 1; index += 1) {
+    const origin = routeStops[index];
+    const destination = routeStops[index + 1];
+    const timing = getLegTiming({ dayDate, timezoneOffset, origin, destination, legIndex: index });
+    const matrixTravel = getTravel(matrixLookup, allStops, origin.id, destination.id);
+
+    try {
+      const route = await computeRouteDetails(apiKey, origin, destination, travelMode, timing.request);
+      legs.push(normalizeDetailedLeg({
+        route,
+        origin,
+        destination,
+        fallbackMinutes: matrixTravel.minutes,
+        fallbackMeters: matrixTravel.meters
+      }));
+    } catch {
+      detailFailureCount += 1;
+      legs.push(normalizeDetailedLeg({
+        route: null,
+        origin,
+        destination,
+        fallbackMinutes: matrixTravel.minutes,
+        fallbackMeters: matrixTravel.meters,
+        fallbackDepartureTime: timing.request.departureTime ?? "",
+        fallbackArrivalTime: timing.request.arrivalTime ?? ""
+      }));
+    }
+  }
+
+  if (detailFailureCount) {
+    warnings.push(`Google Routes could not return detailed directions for ${detailFailureCount} route leg${detailFailureCount === 1 ? "" : "s"}.`);
+  }
+
+  return legs;
+}
+
+function normalizeDetailedLeg({
+  route,
+  origin,
+  destination,
+  fallbackMinutes,
+  fallbackMeters,
+  fallbackDepartureTime = "",
+  fallbackArrivalTime = ""
+}: {
+  route: unknown;
+  origin: RouteStop;
+  destination: RouteStop;
+  fallbackMinutes: number;
+  fallbackMeters: number;
+  fallbackDepartureTime?: string;
+  fallbackArrivalTime?: string;
+}): DetailedRouteLeg {
+  const routeRecord = asRecord(route);
+  const leg = asRecord(asArray(routeRecord.legs)[0]);
+  const steps = asArray(leg.steps).map(normalizeDetailedStep);
+  const routeDurationMinutes = parseNullableDurationMinutes(String(leg.duration ?? routeRecord.duration ?? ""));
+  const durationMinutes = routeDurationMinutes != null
+    ? routeDurationMinutes
+    : Number.isFinite(fallbackMinutes)
+      ? Math.round(fallbackMinutes)
+      : null;
+  const departureTime = firstStepTransitTime(steps, "departureTime") || fallbackDepartureTime;
+  const arrivalTime = lastStepTransitTime(steps, "arrivalTime") || fallbackArrivalTime;
+
+  return {
+    originStopId: origin.id,
+    destinationStopId: destination.id,
+    originTitle: origin.title,
+    destinationTitle: destination.title,
+    summary: summarizeRouteLeg(destination, steps, durationMinutes),
+    durationMinutes,
+    distanceMeters: Number(leg.distanceMeters ?? routeRecord.distanceMeters ?? fallbackMeters ?? 0),
+    departureTime,
+    arrivalTime,
+    googleMapsUrl: buildGoogleDirectionsUrl([origin, destination]),
+    steps
+  };
+}
+
+function normalizeDetailedStep(step: unknown): DetailedRouteStep {
+  const record = asRecord(step);
+  const transitDetails = asRecord(record.transitDetails);
+  const stopDetails = asRecord(transitDetails.stopDetails);
+  const departureStop = asRecord(stopDetails.departureStop);
+  const arrivalStop = asRecord(stopDetails.arrivalStop);
+  const transitLine = asRecord(transitDetails.transitLine);
+  const vehicle = asRecord(transitLine.vehicle);
+  const navigationInstruction = asRecord(record.navigationInstruction);
+  const localizedValues = asRecord(record.localizedValues);
+  const transitLocalizedValues = asRecord(transitDetails.localizedValues);
+  const departureTime = String(stopDetails.departureTime ?? "") || localizedTimeValue(asRecord(transitLocalizedValues.departureTime));
+  const arrivalTime = String(stopDetails.arrivalTime ?? "") || localizedTimeValue(asRecord(transitLocalizedValues.arrivalTime));
+
+  return {
+    type: String(record.travelMode ?? (record.transitDetails ? "TRANSIT" : "WALK")),
+    instruction: String(navigationInstruction.instructions ?? ""),
+    durationMinutes: parseNullableDurationMinutes(String(record.staticDuration ?? "")),
+    distanceMeters: Number(record.distanceMeters ?? 0),
+    transit: record.transitDetails
+      ? {
+        lineName: String(transitLine.name ?? ""),
+        lineShortName: String(transitLine.nameShort ?? ""),
+        headsign: String(transitDetails.headsign ?? ""),
+        vehicleType: String(vehicle.type ?? ""),
+        departureStop: String(departureStop.name ?? ""),
+        arrivalStop: String(arrivalStop.name ?? ""),
+        departureTime,
+        arrivalTime,
+        stopCount: Number.isFinite(Number(transitDetails.stopCount)) ? Number(transitDetails.stopCount) : null,
+        tripShortText: String(transitDetails.tripShortText ?? "")
+      }
+      : null
+  };
+}
+
+function getLegTiming({ dayDate, timezoneOffset, origin, destination, legIndex }: { dayDate: string; timezoneOffset: string; origin: RouteStop; destination: RouteStop; legIndex: number }): LegTiming {
+  const destinationStart = normalizeTime(destination.startTime);
+  if (legIndex === 0 && destinationStart) {
+    return { request: { arrivalTime: routeDateTime(dayDate, destinationStart, timezoneOffset) } };
+  }
+
+  const originStart = normalizeTime(origin.startTime);
+  if (originStart) {
+    return { request: { departureTime: routeDateTime(dayDate, addMinutesToTime(originStart, Number(origin.durationMinutes) || 0), timezoneOffset) } };
+  }
+
+  return { request: { departureTime: routeDateTime(dayDate, "09:00", timezoneOffset) } };
+}
+
+function summarizeRouteLeg(destination: RouteStop, steps: DetailedRouteStep[], durationMinutes: number | null) {
+  const transitStep = steps.find((step) => step.transit);
+  if (transitStep?.transit) {
+    const transit = transitStep.transit;
+    const line = transit.lineShortName || transit.lineName || transit.tripShortText || transit.vehicleType || "Transit";
+    const headsign = transit.headsign ? ` toward ${transit.headsign}` : "";
+    const duration = durationMinutes == null ? "" : ` · ${durationMinutes} min`;
+    const stops = transit.stopCount == null ? "" : ` · ${transit.stopCount} stop${transit.stopCount === 1 ? "" : "s"}`;
+    return `${line}${headsign}${duration}${stops}`;
+  }
+
+  const instruction = steps.find((step) => step.instruction)?.instruction;
+  const duration = durationMinutes == null ? "" : ` · ${durationMinutes} min`;
+  return instruction || `Travel to ${destination.title}${duration}`;
+}
+
+function firstStepTransitTime(steps: DetailedRouteStep[], key: "departureTime" | "arrivalTime") {
+  return steps.find((step) => step.transit?.[key])?.transit?.[key] ?? "";
+}
+
+function lastStepTransitTime(steps: DetailedRouteStep[], key: "departureTime" | "arrivalTime") {
+  return [...steps].reverse().find((step) => step.transit?.[key])?.transit?.[key] ?? "";
+}
+
+function localizedTimeValue(value: Record<string, unknown>) {
+  const time = asRecord(value.time);
+  return String(time.text ?? value.time ?? "").trim();
+}
+
+function parseNullableDurationMinutes(duration: string) {
+  const seconds = parseDurationSeconds(duration);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds / 60) : null;
+}
+
+function routeDateTime(dayDate: string, time: string, timezoneOffset: string) {
+  return `${dayDate}T${normalizeTime(time) || "09:00"}:00${sanitizeTimezoneOffset(timezoneOffset) ?? "+09:00"}`;
+}
+
+function transitFallbackMessage(countryName = "Japan") {
+  return isJapanProfile(countryName)
+    ? "Google Maps Platform does not expose Japan transit directions through this API, so walking times were used for this estimate."
+    : "Transit travel times were unavailable through this API, so walking times were used for this estimate.";
+}
+
+function transitDetailsFallbackMessage(countryName = "Japan") {
+  return isJapanProfile(countryName)
+    ? "Google Maps Platform does not expose Japan transit directions through this API, so this preview uses walking details. Open the route in Google Maps for train and bus planning."
+    : "Transit step details were unavailable through this API, so this preview uses walking details. Open the route in Google Maps for full transit planning.";
+}
+
+function isJapanProfile(countryName = "Japan") {
+  return countryName.trim().toLowerCase() === "japan";
+}
+
+function sanitizeTimezoneOffset(timezoneOffset?: string) {
+  const normalized = timezoneOffset?.trim() ?? "";
+  return /^[+-]\d{2}:\d{2}$/.test(normalized) ? normalized : null;
+}
+
+function normalizeTime(value?: string | null) {
+  return String(value ?? "").slice(0, 5);
+}
+
+function addMinutesToTime(time: string, minutes: number) {
+  const [hours, rawMinutes] = normalizeTime(time).split(":").map(Number);
+  const total = Math.max(0, (Number(hours) || 0) * 60 + (Number(rawMinutes) || 0) + minutes);
+  const nextHours = String(Math.floor(total / 60) % 24).padStart(2, "0");
+  const nextMinutes = String(total % 60).padStart(2, "0");
+  return `${nextHours}:${nextMinutes}`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
 }
 
 function buildMatrixLookup(entries: MatrixEntry[]) {

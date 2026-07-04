@@ -1,11 +1,17 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.47.10";
 import { corsHeaders, errorResponse, jsonResponse } from "../_shared/cors.ts";
-import { resolveGooglePlace, type ResolvedPlace } from "../_shared/googleMaps.ts";
+import { normalizeGoogleMapsLink, resolveGooglePlace, type ResolvedPlace } from "../_shared/googleMaps.ts";
 
 type ResolvePlaceRequest = {
   tripId?: number;
   targetType?: "idea" | "schedule_item" | "trip_day_base";
   targetClientId?: string;
+  placeId?: string;
+  sessionToken?: string;
+  displayNameHint?: string;
+  regionCode?: string;
+  countryName?: string;
+  languageCode?: string;
   mapLink?: string;
   query?: string;
   title?: string;
@@ -39,15 +45,23 @@ Deno.serve(async (request) => {
       return errorResponse("Sign in before resolving places.", 401, "not_authenticated");
     }
 
+    const normalizedMapLink = normalizeGoogleMapsLink(payload.mapLink);
+    const normalizedPayload = { ...payload, mapLink: normalizedMapLink };
     const place = await resolveGooglePlace({
       apiKey,
-      mapLink: payload.mapLink,
+      placeId: payload.placeId,
+      sessionToken: payload.sessionToken,
+      displayNameHint: payload.displayNameHint,
+      regionCode: payload.regionCode === undefined ? "JP" : sanitizeRegionCode(payload.regionCode) ?? undefined,
+      countryName: payload.countryName === undefined ? "Japan" : payload.countryName.trim(),
+      languageCode: payload.languageCode?.trim() || "en",
+      mapLink: normalizedMapLink,
       query: payload.query,
       title: payload.title,
       city: payload.city
     });
 
-    await persistPlace(supabase, payload as Required<Pick<ResolvePlaceRequest, "tripId" | "targetType" | "targetClientId">> & ResolvePlaceRequest, place);
+    await persistPlace(supabase, normalizedPayload as Required<Pick<ResolvePlaceRequest, "tripId" | "targetType" | "targetClientId">> & ResolvePlaceRequest, place);
 
     return jsonResponse({
       status: "ok",
@@ -70,7 +84,7 @@ function validatePayload(payload: ResolvePlaceRequest) {
   if (!payload.targetClientId?.trim()) {
     return "targetClientId is required.";
   }
-  if (!payload.mapLink?.trim() && !payload.query?.trim() && !payload.title?.trim() && !payload.city?.trim()) {
+  if (!payload.placeId?.trim() && !payload.mapLink?.trim() && !payload.query?.trim() && !payload.title?.trim() && !payload.city?.trim()) {
     return "Add a map link, place name, or city before resolving.";
   }
   return "";
@@ -90,6 +104,11 @@ function createUserSupabaseClient(request: Request) {
       }
     }
   });
+}
+
+function sanitizeRegionCode(regionCode?: string) {
+  const normalized = regionCode?.trim().toUpperCase() ?? "";
+  return /^[A-Z]{2}$/.test(normalized) ? normalized : null;
 }
 
 async function persistPlace(supabase: ReturnType<typeof createClient<any>>, payload: Required<Pick<ResolvePlaceRequest, "tripId" | "targetType" | "targetClientId">> & ResolvePlaceRequest, place: ResolvedPlace) {

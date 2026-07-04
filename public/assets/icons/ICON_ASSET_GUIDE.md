@@ -27,6 +27,7 @@ The generic files preserve the same semantic names and suggested uses as the def
 | File | Meaning | Suggested Uses |
 | --- | --- | --- |
 | `tag-food.png` | Food, meals, cafes, snacks | Category chips, meal itinerary blocks, food idea cards |
+| `tag-coffee-bar.png` | Coffee, bars, drinks, nightlife | Coffee/bar category chips, cafe breaks, cocktail stops, evening drink ideas |
 | `tag-culture.png` | Temples, shrines, museums, cultural visits | Category chips, sightseeing items, cultural itinerary blocks |
 | `tag-transit.png` | Trains, airport transfers, route movement | Transit category chips, travel-day blocks, route notes |
 | `tag-hotel.png` | Lodging, ryokan, hotels, check-in/check-out | Hotel category chips, stay cards, reservation rows |

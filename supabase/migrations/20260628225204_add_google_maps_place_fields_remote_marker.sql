@@ -1,0 +1,8 @@
+-- Remote migration marker.
+--
+-- The Google Maps place fields were applied to the linked Supabase project under
+-- migration version 20260628225204, while the local repository already contains
+-- the same SQL under 20260628223000_add_google_maps_place_fields.sql.
+--
+-- Keep this migration intentionally empty so local and remote migration history
+-- stay aligned without replaying already-applied column/index changes.
