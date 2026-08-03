@@ -3,3 +3,7 @@ dist/
 .DS_Store
 .env
 supabase/.temp/
+.codex/
+tmp/
+docs/marketing_assets/
+public/assets/packages/

@@ -1,6 +1,24 @@
 export const TRIP_VERSION = 1;
 
-export const CATEGORIES = ["Food", "Coffee/Bar", "Culture", "Transit", "Hotel", "Shopping", "Open Time"];
+export const CATEGORIES = [
+  "Food",
+  "Coffee/Bar",
+  "Culture",
+  "Transit",
+  "Hotel",
+  "Shopping",
+  "Nature",
+  "Nightlife",
+  "Wellness",
+  "Entertainment",
+  "Family",
+  "Adventure",
+  "Sightseeing",
+  "Markets",
+  "Beauty",
+  "Work-friendly",
+  "Open Time"
+];
 export const STATUSES = ["Proposed", "Maybe", "Booked", "Skipped"];
 export const TRAVELERS = ["Me"];
 const DEFAULT_TRIP_DAYS = 1;

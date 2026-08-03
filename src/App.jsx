@@ -1,14 +1,14 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useForm } from "react-hook-form";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import "sonner/dist/styles.css";
-import { z } from "zod";
-import { zodResolver } from "@hookform/resolvers/zod";
 import {
   Bed,
+  Bus,
   CalendarDays,
+  Car,
   Check,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock3,
@@ -18,12 +18,13 @@ import {
   ExternalLink,
   FileUp,
   Filter,
+  Footprints,
   GripVertical,
-  Heart,
   Info,
   Landmark,
   LogIn,
   LogOut,
+  Luggage,
   Mail,
   MapPin,
   Minus,
@@ -35,7 +36,10 @@ import {
   ReceiptText,
   Route,
   ArrowRight,
+  Search,
+  Settings,
   ShoppingBag,
+  Sparkles,
   Sun,
   Train,
   Trash2,
@@ -49,35 +53,91 @@ import { createPasswordUser } from "./lib/adminUsersRepository.js";
 import { ensureUserProfile, getCurrentSession, onAuthSessionChange, sendMagicLink, signInWithPassword, signOut } from "./lib/auth.js";
 import { acceptPendingTripInvite, acceptTripInvite, claimTripTraveler, createOwnTripTraveler, createTripInvite, listTripCollaboration, prepareInviteSession, revokeTripInvite, updateTripTravelerName } from "./lib/collaborationRepository.js";
 import { clearTripExpenses, deleteTripExpense, listTripExpenses, saveTripExpense, subscribeToExpenseChanges } from "./lib/expenseRepository.js";
-import { EXPENSE_SOURCE_TYPES, buildTravelerOptions, calculateExpenseSummary, createExpenseDraft, deriveExpenseSuggestions, getExpenseSourceKey, prepareExpenseForSave } from "./lib/expenses.js";
+import { EXPENSE_SOURCE_TYPES, buildTravelerOptions, createExpenseDraft, prepareExpenseForSave } from "./lib/expenses.js";
 import { downloadTripExport } from "./lib/export.js";
 import { formatMajorAmount, formatMoney, parseMoneyValue, SUPPORTED_CURRENCIES } from "./lib/money.js";
 import { isSupabaseConfigured } from "./lib/supabaseClient.js";
-import { autocompletePlace, resolvePlace } from "./lib/mapsRepository.js";
+import { autocompletePlaceCached, loadMapsConfigCached, loadPlacePreviewCached, previewRouteCached, resolvePlace } from "./lib/mapsRepository.js";
+import { mapCameraStorageKey, mapFitPadding, outsideViewportResultCount, readStoredMapCamera, resolveInitialMapCamera, selectInitialMapCluster, writeStoredMapCamera } from "./lib/mapCamera.js";
+import { getMapEmptyState } from "./lib/mapEmptyState.js";
+import { IDEAS_ONBOARDING_STATES, buildSuggestedIdeas, readIdeasOnboardingState, shouldShowIdeasWelcome, writeIdeasOnboardingState } from "./lib/onboarding.js";
+import { CATEGORY_CLASS_NAMES } from "./lib/categoryPresentation.js";
+import { buildDayCheck, isDayCheckItemMovable } from "./lib/dayRouteCheck.js";
 import { isValidTrip, loadTrip, mergeIdeas } from "./lib/storage.js";
-import { createTripFromPayload, listTrips, loadRemoteTrip, replaceTripPayload, subscribeToTripChanges } from "./lib/tripRepository.js";
+import {
+  MIN_TIMELINE_DURATION_MINUTES as MIN_SCHEDULE_DURATION_MINUTES,
+  TIMELINE_DAY_MINUTES as DAY_MINUTES,
+  TIMELINE_END_MINUTES as TIME_GRID_END_MINUTES,
+  TIMELINE_GRID_STEP_MINUTES as TIME_GRID_STEP_MINUTES,
+  TIMELINE_INTERACTION_STEP_MINUTES as RESIZE_STEP_MINUTES,
+  TIMELINE_START_MINUTES as TIME_GRID_START_MINUTES,
+  buildTimeGridSlots,
+  clampMinutes,
+  getClampedTimelineDuration,
+  getLatestTimelineStart,
+  getStartTimeOptions,
+  getTimelineSmartStartMinutes,
+  isWithinTimelineRange,
+  minutesToTimeInput,
+  parseTimeToMinutes,
+  snapTimelineMinutes,
+  suggestNextTimelineStart,
+  timeRangesOverlap
+} from "./lib/timeline.js";
+import { commitNewTripDay, createNewTripDayDraft, removeTripDayToIdeas } from "./lib/tripSettings.js";
+import { createTripFromPayload, deleteTrip, listTrips, loadRemoteTrip, replaceTripPayload, subscribeToTripChanges } from "./lib/tripRepository.js";
+import IdeasSection from "./features/ideas/IdeasSection.jsx";
+import ExpensesSection from "./features/expenses/ExpensesSection.jsx";
 
-const DAY_MINUTES = 12 * 60;
 const FILTER_TABS = ["All", "Booked", "Maybe"];
-const CATEGORY_FILTERS = ["All", "Food", "Coffee/Bar", "Culture", "Transit", "Hotel", "Shopping", "Open Time"];
-const TIME_GRID_START_MINUTES = 7 * 60;
-const TIME_GRID_END_MINUTES = 22 * 60;
-const TIME_GRID_STEP_MINUTES = 30;
-const RESIZE_STEP_MINUTES = 15;
-const MIN_SCHEDULE_DURATION_MINUTES = 15;
+const CATEGORY_FILTERS = ["All", ...CATEGORIES];
 const DAY_TIME_GRID_ROW_HEIGHT = 48;
 const TRIP_TIME_GRID_ROW_HEIGHT = 60;
+const TRIP_TIME_GRID_COMPACT_ROW_HEIGHT = 42;
+const TRIP_TIME_GRID_TABLET_ROW_HEIGHT = 40;
+const TRIP_TIME_GRID_PHONE_ROW_HEIGHT = 38;
+const COMPACT_TIMELINE_QUERY = "(max-width: 1600px)";
+const TABLET_TIMELINE_QUERY = "(max-width: 980px)";
+const PHONE_TIMELINE_QUERY = "(max-width: 560px)";
+const MOBILE_NAV_ITEMS = [
+  { id: "trip", label: "Trip", iconSrc: "nav-day-generic.png" },
+  { id: "ideas", label: "Ideas", iconSrc: "nav-ideas-generic.png" },
+  { id: "map", label: "Map", iconSrc: "nav-map-generic.png" },
+  { id: "expenses", label: "Expenses", iconSrc: "nav-expenses-generic.png" }
+];
 const ASSET_BASE = `${import.meta.env.BASE_URL}assets/`;
 const ICON_BASE = `${import.meta.env.BASE_URL}assets/icons/`;
-const FLAG_ASSET = `${ASSET_BASE}japan-flag-title.png`;
+const FLAG_ASSET = `${ASSET_BASE}japan-flag-title.avif`;
+const KUMI_PLANNER_LOGO_ASSET = `${ASSET_BASE}branding/kumi-planner-logo.png`;
 const GENERIC_TRIP_MARK_ASSET = `${ICON_BASE}tag-priority-generic.png`;
-const FOOTER_STRIP_ASSET = `${ASSET_BASE}japan-footer-strip.png`;
+const FOOTER_STRIP_ASSET = `${ASSET_BASE}japan-footer-strip.avif`;
+const GENERIC_TRIP_COVER_ASSET = `${ASSET_BASE}trip-covers/generic-itinerary-cover.avif`;
+const GENERIC_TRIP_NAV_ASSET = `${ICON_BASE}nav-trip-generic.png`;
+const GENERIC_CALENDAR_ASSET = `${ICON_BASE}tag-calendar-generic.png`;
+const GENERIC_FLEXIBLE_ASSET = `${ICON_BASE}tag-flexible-generic.png`;
 const GOOGLE_MAPS_EMBED_KEY = import.meta.env.VITE_GOOGLE_MAPS_EMBED_KEY ?? "";
+const GOOGLE_MAPS_BROWSER_KEY = import.meta.env.VITE_GOOGLE_MAPS_BROWSER_KEY ?? "";
+const GOOGLE_MAPS_MAP_ID = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID ?? "";
 const LOCAL_REALTIME_ECHO_SUPPRESSION_MS = 4000;
 const PENDING_INVITE_TOKEN_KEY = "japan-2026-pending-invite-token:v1";
 const SEEN_EXPENSE_IDS_KEY = "japan-2026-seen-expenses:v1";
-const BUDGET_CURRENCY_SETTINGS_KEY = "japan-2026-budget-currency:v1";
-const DEFAULT_JPY_PER_USD = 160;
+const LAST_SELECTED_TRIP_KEY = "japan-2026-last-selected-trip:v1";
+const MAP_SOURCE_FILTERS = ["All", "Ideas", "Scheduled"];
+const MAP_LOCATION_FILTERS = ["Mapped", "Needs location", "All"];
+const MAP_DEFAULT_FILTERS = {
+  source: "All",
+  dayId: "All",
+  city: "All",
+  category: "All",
+  status: "All",
+  location: "Mapped"
+};
+const EXCLUDED_MAP_CATEGORIES = new Set(["Transit"]);
+const MAP_PROFILE_CENTERS = {
+  global: { lat: 35.6764, lng: 139.65, zoom: 5 },
+  japan: { lat: 35.6764, lng: 139.65, zoom: 6 },
+  "mexico-city": { lat: 19.4326, lng: -99.1332, zoom: 11 }
+};
 const MAPS_PROFILES = {
   global: {
     id: "global",
@@ -113,12 +173,164 @@ const MAPS_PROFILES = {
     autocompleteHint: "Mexico City results for this trip."
   }
 };
-const BUDGET_CURRENCY_VIEWS = [
-  { value: "native", label: "Original" },
-  { value: "JPY", label: "JPY" },
-  { value: "USD", label: "USD" }
-];
 const COST_CURRENCY_OPTIONS = SUPPORTED_CURRENCIES;
+
+const LazyPromoteIdeaModal = React.lazy(() => import("./features/ideas/PromoteIdeaModal.jsx"));
+const LazyExpenseModal = React.lazy(() => import("./features/expenses/ExpenseModal.jsx"));
+const LazyValidatedForm = React.lazy(() => import("./features/forms/ValidatedForm.jsx"));
+
+const LazyPlannerGoogleMap = React.lazy(() =>
+  import("@vis.gl/react-google-maps").then(({ APIProvider, Map, AdvancedMarker, useMap }) => {
+    function PlannerMapCamera({ items, initialItems, fallbackCenter, storageKey, focusRequest = 0, isPhoneView = false, onOutsideResultsChange }) {
+      const map = useMap();
+      const initializedRef = useRef(false);
+      const previousFocusRequestRef = useRef(focusRequest);
+
+      useEffect(() => {
+        if (!map || !window.google?.maps || initializedRef.current) {
+          return;
+        }
+        initializedRef.current = true;
+        const saved = readStoredMapCamera(storageKey);
+        if (saved) {
+          map.moveCamera({ center: { lat: saved.latitude, lng: saved.longitude }, zoom: saved.zoom, heading: saved.heading, tilt: saved.tilt });
+        } else {
+          focusMapItems(map, initialItems, fallbackCenter, mapFitPadding(isPhoneView));
+        }
+      }, [map, initialItems, fallbackCenter, storageKey, isPhoneView]);
+
+      useEffect(() => {
+        if (!map) {
+          return;
+        }
+        let timer = 0;
+        const listener = map.addListener("idle", () => {
+          window.clearTimeout(timer);
+          timer = window.setTimeout(() => {
+            const center = map.getCenter();
+            if (center) {
+              writeStoredMapCamera(storageKey, {
+                latitude: center.lat(),
+                longitude: center.lng(),
+                zoom: map.getZoom() ?? fallbackCenter.zoom ?? 10,
+                heading: map.getHeading() ?? 0,
+                tilt: map.getTilt() ?? 0
+              });
+            }
+            onOutsideResultsChange(countItemsOutsideViewport(map, items));
+          }, 350);
+        });
+        return () => {
+          window.clearTimeout(timer);
+          listener.remove();
+        };
+      }, [map, items, fallbackCenter.zoom, storageKey, onOutsideResultsChange]);
+
+      useEffect(() => {
+        if (!map) {
+          return;
+        }
+        onOutsideResultsChange(countItemsOutsideViewport(map, items));
+      }, [map, items, onOutsideResultsChange]);
+
+      useEffect(() => {
+        if (!map || focusRequest === previousFocusRequestRef.current) {
+          return;
+        }
+        previousFocusRequestRef.current = focusRequest;
+        focusMapItems(map, items, fallbackCenter, mapFitPadding(isPhoneView));
+        onOutsideResultsChange(0);
+      }, [map, items, fallbackCenter, focusRequest, isPhoneView, onOutsideResultsChange]);
+
+      return null;
+    }
+
+    function PlannerGoogleMap({ apiKey, mapId, items, initialItems = [], selectedItemId, routeSelectedItemIds = [], fallbackCenter, storageKey, focusRequest = 0, isPhoneView = false, onOutsideResultsChange, onSelectItem, onMapError }) {
+      const storedCamera = readStoredMapCamera(storageKey);
+      const initialCamera = resolveInitialMapCamera(storedCamera, initialItems, fallbackCenter);
+
+      return (
+        <APIProvider apiKey={apiKey} libraries={["marker"]} onError={onMapError}>
+          <Map
+            className="planner-map-canvas"
+            defaultCenter={initialCamera.center}
+            defaultZoom={initialCamera.zoom}
+            defaultHeading={initialCamera.heading}
+            defaultTilt={initialCamera.tilt}
+            mapId={mapId}
+            gestureHandling="greedy"
+            mapTypeControl={!isPhoneView}
+            fullscreenControl={!isPhoneView}
+            streetViewControl={!isPhoneView}
+            reuseMaps
+          >
+            <PlannerMapCamera
+              items={items}
+              initialItems={initialItems}
+              fallbackCenter={fallbackCenter}
+              storageKey={storageKey}
+              focusRequest={focusRequest}
+              isPhoneView={isPhoneView}
+              onOutsideResultsChange={onOutsideResultsChange}
+            />
+            {items.map((item) => {
+              const routeIndex = routeSelectedItemIds.indexOf(item.id);
+              const isRouteSelected = routeIndex >= 0;
+              return (
+              <AdvancedMarker key={item.id} position={item.position} zIndex={selectedItemId === item.id || isRouteSelected ? 20 + routeIndex : 1} onClick={() => onSelectItem(item.id)}>
+                <span
+                  className={`planner-map-marker source-${item.source} category-${item.categoryClass}${selectedItemId === item.id ? " is-selected" : ""}${isRouteSelected ? " is-route-selected" : ""}`}
+                  title={`${item.sourceLabel}: ${item.title}`}
+                  aria-label={`${item.sourceLabel}: ${item.title}`}
+                >
+                  <img src={item.iconSrc} alt="" aria-hidden="true" draggable={false} />
+                  {isRouteSelected ? <em aria-hidden="true">{routeIndex + 1}</em> : null}
+                </span>
+              </AdvancedMarker>
+              );
+            })}
+          </Map>
+        </APIProvider>
+      );
+    }
+
+    return { default: PlannerGoogleMap };
+  })
+);
+
+function focusMapItems(map, items = [], fallbackCenter, fitPadding = 72) {
+  if (!map || !window.google?.maps) {
+    return;
+  }
+  if (!items.length) {
+    map.moveCamera({ center: { lat: fallbackCenter.lat, lng: fallbackCenter.lng }, zoom: fallbackCenter.zoom ?? 10 });
+    return;
+  }
+  if (items.length === 1) {
+    map.moveCamera({ center: items[0].position, zoom: 14 });
+    return;
+  }
+  const bounds = new window.google.maps.LatLngBounds();
+  items.forEach((item) => bounds.extend(item.position));
+  map.fitBounds(bounds, fitPadding);
+  window.google.maps.event.addListenerOnce(map, "idle", () => {
+    if ((map.getZoom() ?? 0) > 13) {
+      map.setZoom(13);
+    }
+  });
+}
+
+function countItemsOutsideViewport(map, items = []) {
+  if (!items.length) {
+    return 0;
+  }
+  const bounds = map?.getBounds?.();
+  if (!bounds) {
+    return 0;
+  }
+  return outsideViewportResultCount(items, (position) => bounds.contains(position));
+}
+
 function buildTagAssets(suffix = "") {
   return {
     category: {
@@ -128,6 +340,16 @@ function buildTagAssets(suffix = "") {
       Transit: `${ICON_BASE}tag-transit${suffix}.png`,
       Hotel: `${ICON_BASE}tag-hotel${suffix}.png`,
       Shopping: `${ICON_BASE}tag-shopping${suffix}.png`,
+      Nature: `${ICON_BASE}tag-nature-generic.png`,
+      Nightlife: `${ICON_BASE}tag-nightlife-generic.png`,
+      Wellness: `${ICON_BASE}tag-wellness-generic.png`,
+      Entertainment: `${ICON_BASE}tag-entertainment-generic.png`,
+      Family: `${ICON_BASE}tag-family-generic.png`,
+      Adventure: `${ICON_BASE}tag-adventure-generic.png`,
+      Sightseeing: `${ICON_BASE}tag-sightseeing-generic.png`,
+      Markets: `${ICON_BASE}tag-market-generic.png`,
+      Beauty: `${ICON_BASE}tag-beauty-generic.png`,
+      "Work-friendly": `${ICON_BASE}tag-work-generic.png`,
       "Open Time": `${ICON_BASE}tag-open-time${suffix}.png`
     },
     status: {
@@ -155,13 +377,23 @@ const DEFAULT_TAG_ASSETS = TAG_ASSET_THEMES.japan;
 const TagAssetsContext = React.createContext(DEFAULT_TAG_ASSETS);
 
 const CATEGORY_CONFIG_BASE = {
-  Food: { icon: Utensils, className: "food", label: "Food", short: "Food" },
-  "Coffee/Bar": { icon: Coffee, className: "coffee", label: "Coffee/Bar", short: "Cafe" },
-  Culture: { icon: Landmark, className: "culture", label: "Culture", short: "See" },
-  Transit: { icon: Train, className: "transit", label: "Transit", short: "Go" },
-  Hotel: { icon: Bed, className: "hotel", label: "Hotel", short: "Hotel" },
-  Shopping: { icon: ShoppingBag, className: "shopping", label: "Shopping", short: "Shop" },
-  "Open Time": { icon: Clock3, className: "open", label: "Open Time", short: "Open" }
+  Food: { icon: Utensils, className: CATEGORY_CLASS_NAMES.Food, label: "Food", short: "Food" },
+  "Coffee/Bar": { icon: Coffee, className: CATEGORY_CLASS_NAMES["Coffee/Bar"], label: "Coffee/Bar", short: "Cafe" },
+  Culture: { icon: Landmark, className: CATEGORY_CLASS_NAMES.Culture, label: "Culture", short: "See" },
+  Transit: { icon: Train, className: CATEGORY_CLASS_NAMES.Transit, label: "Transit", short: "Go" },
+  Hotel: { icon: Bed, className: CATEGORY_CLASS_NAMES.Hotel, label: "Hotel", short: "Hotel" },
+  Shopping: { icon: ShoppingBag, className: CATEGORY_CLASS_NAMES.Shopping, label: "Shopping", short: "Shop" },
+  Nature: { icon: Clock3, className: CATEGORY_CLASS_NAMES.Nature, label: "Nature", short: "Nature" },
+  Nightlife: { icon: Coffee, className: CATEGORY_CLASS_NAMES.Nightlife, label: "Nightlife", short: "Night" },
+  Wellness: { icon: Clock3, className: CATEGORY_CLASS_NAMES.Wellness, label: "Wellness", short: "Wellness" },
+  Entertainment: { icon: Landmark, className: CATEGORY_CLASS_NAMES.Entertainment, label: "Entertainment", short: "Fun" },
+  Family: { icon: Clock3, className: CATEGORY_CLASS_NAMES.Family, label: "Family", short: "Family" },
+  Adventure: { icon: Clock3, className: CATEGORY_CLASS_NAMES.Adventure, label: "Adventure", short: "Adventure" },
+  Sightseeing: { icon: Landmark, className: CATEGORY_CLASS_NAMES.Sightseeing, label: "Sightseeing", short: "Sights" },
+  Markets: { icon: ShoppingBag, className: CATEGORY_CLASS_NAMES.Markets, label: "Markets", short: "Markets" },
+  Beauty: { icon: Sparkles, className: CATEGORY_CLASS_NAMES.Beauty, label: "Beauty", short: "Beauty" },
+  "Work-friendly": { icon: Coffee, className: CATEGORY_CLASS_NAMES["Work-friendly"], label: "Work-friendly", short: "Work" },
+  "Open Time": { icon: Clock3, className: CATEGORY_CLASS_NAMES["Open Time"], label: "Open Time", short: "Open" }
 };
 
 const STATUS_CLASS = {
@@ -215,111 +447,40 @@ const HOTEL_CATEGORY = "Hotel";
 const DEFAULT_CHECK_IN_TIME = "15:00";
 const DEFAULT_CHECK_OUT_TIME = "11:00";
 
-const SCHEDULE_FORM_SCHEMA = z.object({
-  id: z.string().min(1),
-  itemKind: z.string().optional().default(DEFAULT_NEW_BLOCK.itemKind),
-  title: z.string().optional().default(""),
-  locationInput: z.string().optional().default(""),
-  category: z.string().optional().default(DEFAULT_NEW_BLOCK.category),
-  city: z.string().optional().default(""),
-  start: z.string().optional().default(DEFAULT_NEW_BLOCK.start),
-  duration: z.coerce.number().min(MIN_SCHEDULE_DURATION_MINUTES).default(DEFAULT_NEW_BLOCK.duration),
-  status: z.string().optional().default(DEFAULT_NEW_BLOCK.status),
-  notes: z.string().optional().default(""),
-  cost: z.string().optional().default(""),
-  link: z.string().optional().default(""),
-  mapLink: z.string().optional().default(""),
-  stayStartDayId: z.string().optional().default(""),
-  stayEndDayId: z.string().optional().default(""),
-  checkInTime: z.string().optional().default(""),
-  checkOutTime: z.string().optional().default(""),
-  place: z.any().optional()
-});
-
-const IDEA_FORM_SCHEMA = z.object({
-  id: z.string().min(1),
-  title: z.string().optional().default(""),
-  locationInput: z.string().optional().default(""),
-  category: z.string().optional().default(DEFAULT_NEW_IDEA.category),
-  city: z.string().optional().default(""),
-  status: z.string().optional().default(DEFAULT_NEW_IDEA.status),
-  notes: z.string().optional().default(""),
-  cost: z.string().optional().default(""),
-  link: z.string().optional().default(""),
-  mapLink: z.string().optional().default(""),
-  place: z.any().optional(),
-  votes: z.any().optional(),
-  _mode: z.string().optional()
-});
-
-const EXPENSE_FORM_SCHEMA = z
-  .object({
-    title: z.string().trim().min(1, "Add a title for this expense."),
-    amountInput: z.string().trim().min(1, "Enter a real amount."),
-    currency: z.string().min(1, "Choose a currency."),
-    paidByTravelerClientId: z.string().min(1, "Choose who paid."),
-    expenseDate: z.string().optional().default(""),
-    participantTravelerClientIds: z.array(z.string()).min(1, "Choose at least one person to split with."),
-    notes: z.string().optional().default("")
-  })
-  .superRefine((value, context) => {
-    if (!parseMoneyValue(`${value.currency} ${value.amountInput}`, value.currency)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["amountInput"],
-        message: "Enter a real amount."
-      });
-    }
-  });
-
-const INVITE_FORM_SCHEMA = z.object({
-  email: z.string().trim().email("Enter a valid email."),
-  role: z.enum(["editor", "viewer"]).default("editor")
-});
-
-const PASSWORD_USER_FORM_SCHEMA = z.object({
-  email: z.string().trim().email("Enter a valid email."),
-  displayName: z.string().trim().optional().default(""),
-  password: z.string().min(6, "Use at least 6 characters."),
-  role: z.enum(["editor", "viewer"]).default("editor")
-});
-
-const DAY_FORM_SCHEMA = z.object({
-  id: z.string().min(1),
-  label: z.string().optional().default(""),
-  date: z.string().min(1, "Choose a date."),
-  locationInput: z.string().optional().default(""),
-  city: z.string().optional().default(""),
-  notes: z.string().optional().default(""),
-  baseMapLink: z.string().optional().default(""),
-  basePlace: z.any().optional()
-});
-
-const CREATE_TRIP_FORM_SCHEMA = z
-  .object({
-    name: z.string().trim().min(1, "Add a trip name."),
-    startDate: z.string().min(1, "Choose a start date."),
-    endDate: z.string().min(1, "Choose an end date."),
-    city: z.string().optional().default(""),
-    travelerName: z.string().trim().min(1, "Add at least one traveler.")
-  })
-  .superRefine((value, context) => {
-    if (dateSortValue(value.endDate) < dateSortValue(value.startDate)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["endDate"],
-        message: "End date must be on or after the start date."
-      });
-    }
-  });
-
-const VOTE_ORDER = ["", "maybe", "like", "love"];
-const VOTE_LABELS = {
-  "": "Vote",
-  maybe: "Maybe",
+const REACTION_ORDER = ["", "like", "ok", "interesting", "pass"];
+const REACTION_LABELS = {
+  "": "React",
   like: "Like",
-  love: "Love"
+  ok: "Ok",
+  interesting: "Interesting",
+  pass: "Pass"
 };
+const REACTION_EMOJIS = {
+  "": "♡",
+  like: "👍",
+  ok: "👌",
+  interesting: "👀",
+  pass: "😒"
+};
+const REACTION_OPTIONS = REACTION_ORDER.filter(Boolean).map((value) => ({
+  value,
+  label: REACTION_LABELS[value],
+  emoji: REACTION_EMOJIS[value]
+}));
+const LEGACY_REACTION_VALUES = {
+  maybe: "ok",
+  love: "like"
+};
+
+const MODAL_DIALOG_SELECTOR = '[role="dialog"][aria-modal="true"]';
+const DIALOG_FOCUSABLE_SELECTOR = [
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "a[href]",
+  '[tabindex]:not([tabindex="-1"])'
+].join(",");
 
 const EMPTY_COLLABORATION = {
   members: [],
@@ -346,7 +507,190 @@ function isGenericTravelerName(name) {
   return ["me", "traveler"].includes(String(name ?? "").trim().toLowerCase());
 }
 
+function getInitialTripBoardMode() {
+  if (typeof window !== "undefined" && window.matchMedia(PHONE_TIMELINE_QUERY).matches) {
+    return "list";
+  }
+
+  return "calendar";
+}
+
+function getVisibleDialogFocusTargets(dialog) {
+  return Array.from(dialog.querySelectorAll(DIALOG_FOCUSABLE_SELECTOR)).filter(
+    (element) => element.getAttribute("aria-hidden") !== "true" && element.getClientRects().length > 0
+  );
+}
+
+function useDialogAccessibility() {
+  const activeDialogRef = useRef(null);
+  const returnFocusRef = useRef(null);
+
+  useEffect(() => {
+    let focusFrame = 0;
+    let scrollLock = null;
+
+    function lockDocumentScroll() {
+      if (scrollLock) {
+        return;
+      }
+
+      const body = document.body;
+      const root = document.documentElement;
+      const { scrollX, scrollY } = window;
+      const scrollbarWidth = Math.max(0, window.innerWidth - root.clientWidth);
+      const computedBodyStyle = window.getComputedStyle(body);
+
+      scrollLock = {
+        scrollX,
+        scrollY,
+        bodyStyle: {
+          left: body.style.left,
+          overflow: body.style.overflow,
+          paddingRight: body.style.paddingRight,
+          position: body.style.position,
+          right: body.style.right,
+          top: body.style.top,
+          width: body.style.width
+        },
+        rootOverflow: root.style.overflow
+      };
+
+      root.style.overflow = "hidden";
+      body.style.overflow = "hidden";
+      body.style.position = "fixed";
+      body.style.top = `-${scrollY}px`;
+      body.style.left = `-${scrollX}px`;
+      body.style.right = "0";
+      body.style.width = "100%";
+      if (scrollbarWidth) {
+        body.style.paddingRight = `${parseFloat(computedBodyStyle.paddingRight) + scrollbarWidth}px`;
+      }
+    }
+
+    function unlockDocumentScroll() {
+      if (!scrollLock) {
+        return;
+      }
+
+      const { bodyStyle, rootOverflow, scrollX, scrollY } = scrollLock;
+      const body = document.body;
+      const root = document.documentElement;
+
+      root.style.overflow = rootOverflow;
+      body.style.left = bodyStyle.left;
+      body.style.overflow = bodyStyle.overflow;
+      body.style.paddingRight = bodyStyle.paddingRight;
+      body.style.position = bodyStyle.position;
+      body.style.right = bodyStyle.right;
+      body.style.top = bodyStyle.top;
+      body.style.width = bodyStyle.width;
+      scrollLock = null;
+      window.scrollTo(scrollX, scrollY);
+    }
+
+    function getActiveDialog() {
+      const dialogs = Array.from(document.querySelectorAll(MODAL_DIALOG_SELECTOR)).filter(
+        (dialog) => dialog.getClientRects().length > 0
+      );
+      return dialogs.at(-1) ?? null;
+    }
+
+    function restoreTriggerFocus() {
+      const trigger = returnFocusRef.current;
+      if (trigger instanceof HTMLElement && trigger.isConnected) {
+        trigger.focus();
+      }
+      returnFocusRef.current = null;
+    }
+
+    function syncActiveDialog() {
+      const nextDialog = getActiveDialog();
+      if (nextDialog === activeDialogRef.current) {
+        return;
+      }
+
+      cancelAnimationFrame(focusFrame);
+      if (!nextDialog) {
+        activeDialogRef.current = null;
+        unlockDocumentScroll();
+        restoreTriggerFocus();
+        return;
+      }
+
+      if (!activeDialogRef.current) {
+        returnFocusRef.current = document.activeElement;
+      }
+      lockDocumentScroll();
+      activeDialogRef.current = nextDialog;
+      if (!nextDialog.hasAttribute("tabindex")) {
+        nextDialog.setAttribute("tabindex", "-1");
+      }
+
+      focusFrame = requestAnimationFrame(() => {
+        if (!nextDialog.isConnected || nextDialog.contains(document.activeElement)) {
+          return;
+        }
+        const focusTargets = getVisibleDialogFocusTargets(nextDialog);
+        const initialTarget = nextDialog.querySelector("[autofocus], [data-dialog-initial-focus]") ?? focusTargets[0] ?? nextDialog;
+        initialTarget.focus();
+      });
+    }
+
+    function handleDialogKeyDown(event) {
+      const dialog = activeDialogRef.current;
+      if (!dialog || !dialog.isConnected) {
+        return;
+      }
+
+      if (event.key === "Escape") {
+        const closeButton = dialog.querySelector("[data-dialog-close]");
+        if (closeButton instanceof HTMLElement) {
+          event.preventDefault();
+          closeButton.click();
+        }
+        return;
+      }
+
+      if (event.key !== "Tab") {
+        return;
+      }
+
+      const focusTargets = getVisibleDialogFocusTargets(dialog);
+      if (!focusTargets.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const firstTarget = focusTargets[0];
+      const lastTarget = focusTargets.at(-1);
+      const activeElement = document.activeElement;
+      if (event.shiftKey && (activeElement === firstTarget || !dialog.contains(activeElement))) {
+        event.preventDefault();
+        lastTarget.focus();
+      } else if (!event.shiftKey && (activeElement === lastTarget || !dialog.contains(activeElement))) {
+        event.preventDefault();
+        firstTarget.focus();
+      }
+    }
+
+    const observer = new MutationObserver(syncActiveDialog);
+    observer.observe(document.body, { childList: true, subtree: true });
+    document.addEventListener("keydown", handleDialogKeyDown, true);
+    syncActiveDialog();
+
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      observer.disconnect();
+      document.removeEventListener("keydown", handleDialogKeyDown, true);
+      unlockDocumentScroll();
+      restoreTriggerFocus();
+    };
+  }, []);
+}
+
 function App() {
+  useDialogAccessibility();
   const [trip, setTrip] = useState(loadTrip);
   const [selectedDayId, setSelectedDayId] = useState(() => trip.days[0]?.id);
   const [session, setSession] = useState(null);
@@ -374,17 +718,28 @@ function App() {
   const [isSharingOpen, setIsSharingOpen] = useState(false);
   const [latestInviteUrl, setLatestInviteUrl] = useState("");
   const [activeView, setActiveView] = useState("trip");
-  const [tripBoardMode, setTripBoardMode] = useState("calendar");
+  const [hasVisitedIdeas, setHasVisitedIdeas] = useState(false);
+  const [hasVisitedExpenses, setHasVisitedExpenses] = useState(false);
+  const [tripBoardMode, setTripBoardMode] = useState(getInitialTripBoardMode);
+  const [hasTripBoardModeChoice, setHasTripBoardModeChoice] = useState(false);
   const [dayViewMode, setDayViewMode] = useState("timeline");
   const [isDateRailCollapsed, setIsDateRailCollapsed] = useState(false);
   const [ideaTab, setIdeaTab] = useState("All");
-  const [categoryFilter, setCategoryFilter] = useState("All");
   const [ideaPromotion, setIdeaPromotion] = useState(null);
+  const [openReactionPickerId, setOpenReactionPickerId] = useState("");
   const [editingSchedule, setEditingSchedule] = useState(null);
   const [editingIdea, setEditingIdea] = useState(null);
   const [editingExpense, setEditingExpense] = useState(null);
   const [editingDay, setEditingDay] = useState(null);
-  const [isCreateTripOpen, setIsCreateTripOpen] = useState(false);
+  const [editingDayMode, setEditingDayMode] = useState("edit");
+  const [dayRemovalCandidate, setDayRemovalCandidate] = useState(null);
+  const [isTripSettingsOpen, setIsTripSettingsOpen] = useState(false);
+  const [isTripDeleteConfirmationOpen, setIsTripDeleteConfirmationOpen] = useState(false);
+  const [isDeletingTrip, setIsDeletingTrip] = useState(false);
+  const [tripSettingsSection, setTripSettingsSection] = useState("general");
+  const [tripSettingsNameDraft, setTripSettingsNameDraft] = useState("");
+  const [settingsReturnSection, setSettingsReturnSection] = useState("");
+  const [ideasOnboardingState, setIdeasOnboardingState] = useState("");
   const [resolvingTarget, setResolvingTarget] = useState("");
   const [routePlanner, setRoutePlanner] = useState({
     isOpen: false,
@@ -398,10 +753,38 @@ function App() {
   const pendingSaveSnapshotRef = useRef(null);
   const realtimeTimerRef = useRef(null);
   const skipNextSaveRef = useRef(false);
+  const pendingTripInitialViewRef = useRef(null);
   const localRealtimeSuppressionUntilRef = useRef(0);
   const acceptingInviteRef = useRef("");
   const openingInviteRef = useRef("");
   const sessionUserId = session?.user?.id ?? "";
+  const isPhoneView = useMediaQueryMatch(PHONE_TIMELINE_QUERY);
+
+  useEffect(() => {
+    if (isPhoneView && !hasTripBoardModeChoice) {
+      setTripBoardMode("list");
+    }
+  }, [hasTripBoardModeChoice, isPhoneView]);
+
+  useEffect(() => {
+    if (activeView === "day") {
+      setActiveView("trip");
+    }
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView === "ideas") {
+      setHasVisitedIdeas(true);
+    }
+    if (activeView === "expenses") {
+      setHasVisitedExpenses(true);
+    }
+  }, [activeView]);
+
+  function handleTripBoardModeChange(mode) {
+    setHasTripBoardModeChoice(true);
+    setTripBoardMode(mode);
+  }
 
   useEffect(() => {
     const urlInviteToken = getSearchParam("invite");
@@ -442,6 +825,7 @@ function App() {
 
     const unsubscribe = onAuthSessionChange((event, nextSession) => {
       if (event === "SIGNED_OUT" || !nextSession) {
+        clearLastSelectedTripId(getLastSelectedTripStorageKey(session?.user?.id));
         setSession(null);
         setSelectedTripId(null);
         setTripLoaded(false);
@@ -579,6 +963,11 @@ function App() {
   const mapsProfile = useMemo(() => getTripMapsProfile(trip, sortedDays), [trip, sortedDays]);
   const tagAssets = useMemo(() => getTagAssetsForMapsProfile(mapsProfile), [mapsProfile.id]);
   const tripMarkAsset = useMemo(() => getTripMarkAssetForMapsProfile(mapsProfile), [mapsProfile.id]);
+  const mapOverview = useMemo(() => buildPlannerMapItems(trip, sortedDays, tagAssets), [trip, sortedDays, tagAssets]);
+  const missingLocationIdeaIds = useMemo(
+    () => new Set(mapOverview.needsLocationItems.filter((item) => item.source === "idea").map((item) => item.sourceItem.id)),
+    [mapOverview]
+  );
 
   const selectedDay = useMemo(
     () => sortedDays.find((day) => day.id === selectedDayId) ?? sortedDays[0],
@@ -612,10 +1001,6 @@ function App() {
   const sortedSchedule = useMemo(() => sortActivitySchedule(selectedDay?.schedule ?? []), [selectedDay]);
   const selectedDayStays = useMemo(() => getStaysForDay(selectedDay, sortedDays), [selectedDay, sortedDays]);
   const dayStats = useMemo(() => getDayStats(selectedDay), [selectedDay]);
-  const filteredIdeas = useMemo(
-    () => filterIdeas(trip.ideas, ideaTab, categoryFilter),
-    [trip.ideas, ideaTab, categoryFilter]
-  );
   const dateRangeLabel = useMemo(() => formatTripRange(sortedDays), [sortedDays]);
   const currentMember = useMemo(
     () => collaboration.members.find((member) => member.profileId === sessionUserId),
@@ -632,6 +1017,8 @@ function App() {
   const currentTravelerName = currentTraveler?.name ?? "";
   const currentTravelerClientId = currentTraveler?.clientId ?? "";
   const canManageSharing = currentMember?.role === "owner";
+  const canEditTrip = currentMember?.role !== "viewer";
+  const canDeleteTrip = currentMember?.role === "owner";
   const needsTravelerIdentity = Boolean(
     sessionUserId &&
     selectedTripId &&
@@ -654,33 +1041,46 @@ function App() {
     !showInviteWelcome &&
     (!ownerNeedsTravelerIdentity || ownerAutoLinkCanRecover)
   );
+  const hasDialogOpen = Boolean(
+    routePlanner.isOpen ||
+    editingSchedule ||
+    ideaPromotion ||
+    editingIdea ||
+    editingExpense ||
+    editingDay ||
+    dayRemovalCandidate ||
+    isTripSettingsOpen ||
+    isTripDeleteConfirmationOpen ||
+    pendingImport ||
+    isSharingOpen ||
+    showInviteWelcome ||
+    showTravelerIdentityPrompt
+  );
   const peopleCount = collaboration.travelers.length || trip.travelers.length;
   const travelerOptions = useMemo(
     () => buildTravelerOptions(trip.travelers, collaboration.travelers),
     [trip.travelers, collaboration.travelers]
   );
-  const expenseSuggestions = useMemo(
-    () => deriveExpenseSuggestions(trip, expenses),
-    [trip, expenses]
-  );
-  const expenseSummary = useMemo(
-    () => calculateExpenseSummary(expenses, travelerOptions),
-    [expenses, travelerOptions]
-  );
   const expenseSeenStorageKey = useMemo(
     () => getSeenExpensesStorageKey(sessionUserId, selectedTripId),
     [sessionUserId, selectedTripId]
   );
+  const lastSelectedTripStorageKey = useMemo(
+    () => getLastSelectedTripStorageKey(sessionUserId),
+    [sessionUserId]
+  );
+
+  useEffect(() => {
+    setIdeasOnboardingState(readIdeasOnboardingState(sessionUserId, selectedTripId));
+  }, [selectedTripId, sessionUserId]);
   const seenExpenseIdSet = useMemo(() => new Set(seenExpenseIds), [seenExpenseIds]);
   const expenseAttentionCount = useMemo(
     () => expenses.filter((expense) => !seenExpenseIdSet.has(getExpenseAttentionId(expense))).length,
     [expenses, seenExpenseIdSet]
   );
   const ideasAttentionCount = useMemo(
-    () => currentTravelerName
-      ? trip.ideas.filter((idea) => !idea.votes?.[currentTravelerName]).length
-      : 0,
-    [trip.ideas, currentTravelerName]
+    () => trip.ideas.length,
+    [trip.ideas]
   );
   const pendingInvitations = useMemo(
     () => collaboration.invitations.filter((invite) => invite.status === "pending"),
@@ -709,7 +1109,14 @@ function App() {
         setTrip(remoteTrip);
         const remoteDays = deriveTripDays(remoteTrip.days);
         setSelectedDayId(remoteDays[0]?.id);
-        setActiveView("trip");
+        const pendingInitialView = pendingTripInitialViewRef.current;
+        const nextActiveView = pendingInitialView?.tripId === Number(selectedTripId)
+          ? pendingInitialView.view
+          : "trip";
+        if (pendingInitialView?.tripId === Number(selectedTripId)) {
+          pendingTripInitialViewRef.current = null;
+        }
+        setActiveView(nextActiveView);
         setTripBoardMode("calendar");
         setExpenses(remoteExpenses);
         setExpensesStatus("ready");
@@ -890,6 +1297,16 @@ function App() {
     const summaries = await listTrips(session?.user?.id);
     setTripSummaries(summaries);
     setTripListStatus("ready");
+    if (!selectedTripId && !inviteToken && lastSelectedTripStorageKey) {
+      const lastTripId = readLastSelectedTripId(lastSelectedTripStorageKey);
+      if (lastTripId && summaries.some((summary) => Number(summary.id) === lastTripId)) {
+        setSelectedTripId(lastTripId);
+      } else if (!lastTripId && summaries.length === 1) {
+        selectTrip(summaries[0].id);
+      } else if (lastTripId) {
+        clearLastSelectedTripId(lastSelectedTripStorageKey);
+      }
+    }
     return summaries;
   }
 
@@ -924,14 +1341,17 @@ function App() {
     }
 
     setSelectedTripId(nextTripId);
+    writeLastSelectedTripId(lastSelectedTripStorageKey, nextTripId);
   }
 
   function openTripPicker() {
+    pendingTripInitialViewRef.current = null;
     setSelectedTripId(null);
     setTripLoaded(false);
     setTripLoading(false);
     setSyncStatus("idle");
     setCollaboration(EMPTY_COLLABORATION);
+    clearLastSelectedTripId(lastSelectedTripStorageKey);
   }
 
   async function refreshCollaboration({ silent = false } = {}) {
@@ -1189,6 +1609,7 @@ function App() {
 
   async function handleSignOut() {
     try {
+      clearLastSelectedTripId(lastSelectedTripStorageKey);
       await signOut();
       setSession(null);
       setSelectedTripId(null);
@@ -1203,6 +1624,7 @@ function App() {
 
   async function resetDeletedAuthSession() {
     try {
+      clearLastSelectedTripId(lastSelectedTripStorageKey);
       await signOut();
     } catch {
       // If the remote auth user was deleted, local session cleanup is the important part.
@@ -1221,7 +1643,7 @@ function App() {
     setAuthMessage("That previous sign-in was cleared. Open the invite link again.");
   }
 
-  async function createTrip(payload) {
+  async function createTrip(payload, { initialView = "trip", startIdeasOnboarding = false } = {}) {
     if (!session?.user) {
       return;
     }
@@ -1230,7 +1652,15 @@ function App() {
     try {
       const nextTripId = await createTripFromPayload({ ...payload, dateRangeLabel: formatTripRange(deriveTripDays(payload.days)) }, session.user.id, getAccountDisplayName(session.user));
       await refreshTripSummaries({ silent: true });
+      if (startIdeasOnboarding) {
+        writeIdeasOnboardingState(session.user.id, nextTripId, IDEAS_ONBOARDING_STATES.PENDING);
+        setIdeasOnboardingState(IDEAS_ONBOARDING_STATES.PENDING);
+      }
+      if (initialView !== "trip") {
+        pendingTripInitialViewRef.current = { tripId: Number(nextTripId), view: initialView };
+      }
       selectTrip(nextTripId);
+      setActiveView(initialView);
       showToast({ type: "success", message: "Trip created" });
     } catch (error) {
       setTripListStatus("error");
@@ -1238,29 +1668,19 @@ function App() {
     }
   }
 
-  function openCreateTripModal() {
-    setIsCreateTripOpen(true);
-  }
-
-  function createCustomTrip(formValues) {
-    const travelerName = formValues.travelerName?.trim() || getAccountDisplayName(session?.user);
+  function createGuidedTrip(formValues) {
     const payload = buildCustomTrip({
       name: formValues.name,
       startDate: formValues.startDate,
       endDate: formValues.endDate,
       city: formValues.city,
-      travelers: [travelerName]
+      travelers: [getAccountDisplayName(session?.user)]
     });
-    setIsCreateTripOpen(false);
-    createTrip(payload);
+    return createTrip(payload, { initialView: "ideas", startIdeasOnboarding: true });
   }
 
   function createJapanTemplateTrip() {
     createTrip(makeInitialTrip());
-  }
-
-  function importLocalPlanner() {
-    createTrip(loadTrip());
   }
 
   function handlePickerImportFile(event) {
@@ -1289,6 +1709,99 @@ function App() {
 
   function updateTripDetails(changes) {
     setTrip((current) => ({ ...current, ...changes }));
+  }
+
+  function openTripSettings(section = "general") {
+    setTripSettingsNameDraft(trip.name ?? "");
+    setTripSettingsSection(section);
+    setIsTripSettingsOpen(true);
+  }
+
+  function closeTripSettings() {
+    setTripSettingsNameDraft(trip.name ?? "");
+    setIsTripSettingsOpen(false);
+  }
+
+  function saveTripSettingsGeneral() {
+    const nextName = tripSettingsNameDraft.trim();
+    if (!nextName) return;
+    updateTripDetails({ name: nextName });
+    setTripSettingsNameDraft(nextName);
+    showToast({ type: "success", message: "Trip settings saved" });
+  }
+
+  function returnToTripSettings() {
+    if (!settingsReturnSection) return;
+    const nextSection = settingsReturnSection;
+    setSettingsReturnSection("");
+    openTripSettings(nextSection);
+  }
+
+  function cancelDayEditing() {
+    setEditingDay(null);
+    setEditingDayMode("edit");
+    returnToTripSettings();
+  }
+
+  function openPeopleFromSettings() {
+    setSettingsReturnSection("people");
+    setIsTripSettingsOpen(false);
+    setIsSharingOpen(true);
+  }
+
+  function closePeopleDialog() {
+    setIsSharingOpen(false);
+    returnToTripSettings();
+  }
+
+  function importFromSettings() {
+    setIsTripSettingsOpen(false);
+    fileInputRef.current?.click();
+  }
+
+  function resetFromSettings() {
+    setIsTripSettingsOpen(false);
+    void resetPlanner();
+  }
+
+  function requestTripDeletion() {
+    if (!canDeleteTrip) {
+      showToast({ type: "error", message: "Only the trip owner can delete this trip." });
+      return;
+    }
+    setIsTripSettingsOpen(false);
+    setIsTripDeleteConfirmationOpen(true);
+  }
+
+  function cancelTripDeletion() {
+    setIsTripDeleteConfirmationOpen(false);
+    openTripSettings("data");
+  }
+
+  async function confirmTripDeletion() {
+    if (!selectedTripId || !canDeleteTrip || isDeletingTrip) {
+      return;
+    }
+
+    setIsDeletingTrip(true);
+    window.clearTimeout(saveTimerRef.current);
+    pendingSaveSnapshotRef.current = null;
+    try {
+      const deletedTripName = trip.name;
+      await deleteTrip({
+        tripId: selectedTripId,
+        ownerId: sessionUserId,
+        expectedName: deletedTripName
+      });
+      setIsTripDeleteConfirmationOpen(false);
+      openTripPicker();
+      await refreshTripSummaries({ silent: true });
+      showToast({ type: "success", message: `${deletedTripName} deleted` });
+    } catch (error) {
+      showToast({ type: "error", message: error.message });
+    } finally {
+      setIsDeletingTrip(false);
+    }
   }
 
   function updateDay(dayId, updater) {
@@ -1363,70 +1876,96 @@ function App() {
     toast.message(message);
   }
 
-  function addTripDay() {
-    const lastDay = sortedDays[sortedDays.length - 1];
-    const nextDate = addDateDays(lastDay?.date ?? getTodayDate(), 1);
-    const newDay = {
-      id: `day-${Date.now()}`,
-      date: nextDate,
-      label: "",
-      city: lastDay?.city ?? "",
-      notes: "",
-      baseMapLink: "",
-      basePlace: null,
-      schedule: []
-    };
-
-    setTrip((current) => ({ ...current, days: [...current.days, newDay] }));
-    setSelectedDayId(newDay.id);
-    setActiveView("day");
+  function addTripDay({ returnToSettings = false } = {}) {
+    const newDay = createNewTripDayDraft(sortedDays);
+    setEditingDayMode("new");
+    setSettingsReturnSection(returnToSettings ? "days" : "");
+    setIsTripSettingsOpen(false);
     setEditingDay(newDay);
-    showToast({ type: "success", message: "Day added" });
   }
 
   function saveTripDay(dayDraft) {
-    setTrip((current) => ({
-      ...current,
-      days: current.days.map((day) =>
-        day.id === dayDraft.id
-          ? {
-              ...day,
-              date: dayDraft.date,
-              label: dayDraft.label?.trim() ?? "",
-              city: (dayDraft.city ?? "").trim(),
-              notes: dayDraft.notes ?? "",
-              baseMapLink: normalizeGoogleMapsUrlInput(dayDraft.baseMapLink),
-              basePlace: dayDraft.basePlace ?? null
-            }
-          : day
-      )
-    }));
+    const normalizedDay = {
+      ...dayDraft,
+      label: dayDraft.label?.trim() ?? "",
+      city: (dayDraft.city ?? "").trim(),
+      notes: dayDraft.notes ?? "",
+      baseMapLink: normalizeGoogleMapsUrlInput(dayDraft.baseMapLink),
+      basePlace: dayDraft.basePlace ?? null
+    };
+    setTrip((current) => editingDayMode === "new"
+      ? commitNewTripDay(current, normalizedDay)
+      : {
+          ...current,
+          days: current.days.map((day) => day.id === normalizedDay.id ? { ...day, ...normalizedDay } : day)
+        });
+    setSelectedDayId(normalizedDay.id);
     setEditingDay(null);
-    showToast({ type: "success", message: "Day updated" });
+    setEditingDayMode("edit");
+    showToast({ type: "success", message: editingDayMode === "new" ? "Day added" : "Day updated" });
+    returnToTripSettings();
   }
 
-  function deleteTripDay(dayId) {
-    if (sortedDays.length <= 1) {
-      return;
-    }
+  function openTripDayDetails(dayId) {
     const day = sortedDays.find((candidate) => candidate.id === dayId);
-    if (!window.confirm(`Remove ${day?.label || `Day ${day?.dayNumber ?? ""}`} and all of its scheduled activities?`)) {
+    if (!day) {
       return;
     }
 
-    const remainingDays = sortedDays.filter((candidate) => candidate.id !== dayId);
-    const nextSelection = remainingDays.find((candidate) => candidate.sortIndex > (day?.sortIndex ?? -1)) ?? remainingDays[remainingDays.length - 1];
+    setSelectedDayId(day.id);
+    setEditingDayMode("edit");
+    setSettingsReturnSection("");
+    setEditingDay(day);
+  }
 
-    setTrip((current) => ({
-      ...current,
-      days: current.days.filter((candidate) => candidate.id !== dayId)
-    }));
-    setSelectedDayId(nextSelection.id);
-    setIdeaPromotion((currentPromotion) =>
-      currentPromotion?.dayId === dayId ? { ...currentPromotion, dayId: nextSelection.id } : currentPromotion
-    );
+  function editTripDayFromSettings(day) {
+    setEditingDayMode("edit");
+    setSettingsReturnSection("days");
+    setIsTripSettingsOpen(false);
+    setEditingDay(day);
+  }
+
+  function openRoutePlannerForDay(dayId) {
+    const day = sortedDays.find((candidate) => candidate.id === dayId);
+    if (!day) {
+      return;
+    }
+
+    setSelectedDayId(day.id);
+    setRoutePlanner({
+      isOpen: true,
+      reviewSuggestion: false,
+      dayId: day.id
+    });
+  }
+
+  function requestTripDayRemoval(day, { returnToSettings = false } = {}) {
+    if (!day || sortedDays.length <= 1) return;
     setEditingDay(null);
-    showToast({ type: "success", message: "Day removed" });
+    setIsTripSettingsOpen(false);
+    setSettingsReturnSection(returnToSettings ? "days" : settingsReturnSection);
+    setDayRemovalCandidate(day);
+  }
+
+  function confirmTripDayRemoval() {
+    if (!dayRemovalCandidate) return;
+    const result = removeTripDayToIdeas(trip, dayRemovalCandidate.id);
+    if (!result.removed) {
+      setDayRemovalCandidate(null);
+      return;
+    }
+    setTrip(result.trip);
+    setSelectedDayId(result.nextDayId);
+    setIdeaPromotion((currentPromotion) => currentPromotion?.dayId === dayRemovalCandidate.id
+      ? { ...currentPromotion, dayId: result.nextDayId }
+      : currentPromotion);
+    setDayRemovalCandidate(null);
+    showToast({
+      type: "success",
+      message: result.movedCount ? `Day removed · ${result.movedCount} ${result.movedCount === 1 ? "activity" : "activities"} moved to Ideas` : "Day removed"
+    });
+    void repointScheduleExpensesToIdeas(result.expenseSourceMappings);
+    returnToTripSettings();
   }
 
   function saveScheduleItem(dayId, item, consumedIdeaId) {
@@ -1491,19 +2030,21 @@ function App() {
     showToast({ type: "success", message: "Activity deleted" });
   }
 
-  async function repointScheduleExpensesToIdea(scheduleItemId, ideaId) {
-    const linkedExpenses = expenses.filter(
-      (expense) => expense.sourceType === EXPENSE_SOURCE_TYPES.SCHEDULE_ITEM && expense.sourceClientId === scheduleItemId
-    );
+  async function repointScheduleExpensesToIdeas(sourceMappings = []) {
+    const ideaIdByScheduleItemId = new Map(sourceMappings.map(({ scheduleItemId, ideaId }) => [scheduleItemId, ideaId]));
+    const linkedExpenses = expenses.filter((expense) => (
+      expense.sourceType === EXPENSE_SOURCE_TYPES.SCHEDULE_ITEM && ideaIdByScheduleItemId.has(expense.sourceClientId)
+    ));
     if (!linkedExpenses.length) {
       return;
     }
 
-    const nextLocalExpenses = expenses.map((expense) =>
-      expense.sourceType === EXPENSE_SOURCE_TYPES.SCHEDULE_ITEM && expense.sourceClientId === scheduleItemId
+    const nextLocalExpenses = expenses.map((expense) => {
+      const ideaId = ideaIdByScheduleItemId.get(expense.sourceClientId);
+      return expense.sourceType === EXPENSE_SOURCE_TYPES.SCHEDULE_ITEM && ideaId
         ? { ...expense, sourceType: EXPENSE_SOURCE_TYPES.IDEA, sourceClientId: ideaId }
-        : expense
-    );
+        : expense;
+    });
     setExpenses(nextLocalExpenses);
 
     if (!selectedTripId) {
@@ -1515,6 +2056,7 @@ function App() {
       suppressLocalRealtimeEcho();
       let nextExpenses = nextLocalExpenses;
       for (const expense of linkedExpenses) {
+        const ideaId = ideaIdByScheduleItemId.get(expense.sourceClientId);
         nextExpenses = await saveTripExpense(
           selectedTripId,
           prepareExpenseForSave({ ...expense, sourceType: EXPENSE_SOURCE_TYPES.IDEA, sourceClientId: ideaId }, travelerOptions)
@@ -1528,6 +2070,10 @@ function App() {
       setExpensesStatus("error");
       showToast({ type: "error", message: "Moved to Ideas, but the linked expense could not be updated." });
     }
+  }
+
+  function repointScheduleExpensesToIdea(scheduleItemId, ideaId) {
+    return repointScheduleExpensesToIdeas([{ scheduleItemId, ideaId }]);
   }
 
   function moveScheduleItemToIdeas(dayId, itemId) {
@@ -1550,15 +2096,18 @@ function App() {
     setEditingSchedule(null);
     setActiveView("ideas");
     setIdeaTab("All");
-    setCategoryFilter("All");
     showToast({ type: "success", message: "Moved back to Ideas" });
     void repointScheduleExpensesToIdea(itemId, movedIdea.id);
   }
 
-  async function resolveTripPlace({ targetType, targetClientId, dayId, placeId, sessionToken, displayNameHint, mapLink, query, title, city, silent = false }) {
+  async function resolveTripPlace({ targetType, targetClientId, dayId, placeId, sessionToken, displayNameHint, mapLink, query, title, city, silent = false, throwOnError = false }) {
     if (!selectedTripId) {
+      const message = "Open a Supabase trip before resolving places.";
       if (!silent) {
-        showToast({ type: "error", message: "Open a Supabase trip before resolving places." });
+        showToast({ type: "error", message });
+      }
+      if (throwOnError) {
+        throw new Error(message);
       }
       return null;
     }
@@ -1593,6 +2142,9 @@ function App() {
       if (!silent) {
         showToast({ type: "error", message: error.message });
       }
+      if (throwOnError) {
+        throw error;
+      }
       return null;
     } finally {
       setResolvingTarget("");
@@ -1610,6 +2162,11 @@ function App() {
     const sourceItem = sourceDay?.schedule?.find((item) => item.id === suggestion.itemId);
     if (!sourceDay || !targetDay || !sourceItem) {
       showToast({ type: "error", message: "That suggested move is no longer available." });
+      return;
+    }
+
+    if (!isDayCheckItemMovable(sourceItem)) {
+      showToast({ type: "info", message: "Transfers, stays, and booked activities stay fixed on their current day." });
       return;
     }
 
@@ -1755,7 +2312,7 @@ function App() {
         ...DEFAULT_NEW_BLOCK,
         id: `sched-${Date.now()}`,
         city: targetDay.city,
-        start: startTime ?? (findAvailableScheduleStart(targetDay.schedule, DEFAULT_NEW_BLOCK.duration) || suggestNextStart(targetDay.schedule))
+        start: startTime ?? (findAvailableScheduleStart(targetDay.schedule, DEFAULT_NEW_BLOCK.duration) || suggestNextTimelineStart(targetDay.schedule, DEFAULT_NEW_BLOCK.duration))
       }
     });
   }
@@ -1764,9 +2321,48 @@ function App() {
     setEditingIdea({
       ...DEFAULT_NEW_IDEA,
       id: `idea-${Date.now()}`,
-      votes: Object.fromEntries(trip.travelers.map((name) => [name, ""])),
+      reactions: Object.fromEntries(trip.travelers.map((name) => [name, ""])),
       _mode: "new"
     });
+  }
+
+  function setIdeasOnboarding(nextState) {
+    writeIdeasOnboardingState(sessionUserId, selectedTripId, nextState);
+    setIdeasOnboardingState(nextState);
+  }
+
+  function completeIdeasOnboarding() {
+    if (ideasOnboardingState === IDEAS_ONBOARDING_STATES.PENDING) {
+      setIdeasOnboarding(IDEAS_ONBOARDING_STATES.COMPLETED);
+    }
+  }
+
+  function saveSuggestedIdeas(suggestions, category) {
+    const result = buildSuggestedIdeas({
+      suggestions,
+      existingIdeas: trip.ideas,
+      category,
+      destination: trip.days[0]?.city ?? "",
+      travelers: trip.travelers
+    });
+    if (!result.addedIdeas.length) {
+      showToast({ type: "info", message: "Those places are already in Ideas" });
+      return 0;
+    }
+
+    setTrip((current) => {
+      const next = buildSuggestedIdeas({
+        suggestions,
+        existingIdeas: current.ideas,
+        category,
+        destination: current.days[0]?.city ?? "",
+        travelers: current.travelers
+      });
+      return next.addedIdeas.length ? { ...current, ideas: next.ideas } : current;
+    });
+    setIdeasOnboarding(IDEAS_ONBOARDING_STATES.COMPLETED);
+    showToast({ type: "success", message: `${result.addedIdeas.length} ${result.addedIdeas.length === 1 ? "idea" : "ideas"} added — syncing` });
+    return result.addedIdeas.length;
   }
 
   function saveIdea(idea) {
@@ -1780,6 +2376,8 @@ function App() {
       mapLink: normalizeGoogleMapsUrlInput(idea.mapLink)
     };
     delete normalizedIdea._mode;
+    delete normalizedIdea.votes;
+    normalizedIdea.reactions = normalizeIdeaReactions(normalizedIdea, trip.travelers);
 
     setTrip((current) => ({
       ...current,
@@ -1787,8 +2385,11 @@ function App() {
         ? current.ideas.map((currentIdea) => (currentIdea.id === idea.id ? normalizedIdea : currentIdea))
         : [normalizedIdea, ...current.ideas]
     }));
+    if (idea._mode === "new") {
+      completeIdeasOnboarding();
+    }
     setEditingIdea(null);
-    showToast({ type: "success", message: idea._mode === "new" ? "Idea saved" : "Idea updated" });
+    showToast({ type: "success", message: idea._mode === "new" ? "Idea added — syncing" : "Idea updated — syncing" });
   }
 
   function deleteIdea(ideaId) {
@@ -1799,8 +2400,8 @@ function App() {
     setEditingIdea(null);
   }
 
-  function cycleVote(ideaId, traveler) {
-    if (!currentTravelerName || traveler !== currentTravelerName) {
+  function setIdeaReaction(ideaId, reaction) {
+    if (!currentTravelerName) {
       return;
     }
 
@@ -1810,11 +2411,13 @@ function App() {
         if (idea.id !== ideaId) {
           return idea;
         }
-        const currentVote = idea.votes?.[traveler] ?? "";
-        const nextVote = VOTE_ORDER[(VOTE_ORDER.indexOf(currentVote) + 1) % VOTE_ORDER.length];
-        return { ...idea, votes: { ...idea.votes, [traveler]: nextVote } };
+        const reactions = normalizeIdeaReactions(idea, current.travelers);
+        const currentReaction = reactions[currentTravelerName] ?? "";
+        const nextReaction = currentReaction === reaction ? "" : normalizeReaction(reaction);
+        return { ...idea, reactions: { ...reactions, [currentTravelerName]: nextReaction } };
       })
     }));
+    setOpenReactionPickerId("");
   }
 
   function openIdeaPromotion(idea) {
@@ -2067,28 +2670,18 @@ function App() {
 
   if (!selectedTripId) {
     return (
-      <>
-        <TripPicker
-          email={session.user.email}
-          trips={tripSummaries}
-          status={tripListStatus}
-          pickerFileInputRef={pickerFileInputRef}
-          onRefresh={() => refreshTripSummaries()}
-          onSelect={selectTrip}
-          onCreateTrip={openCreateTripModal}
-          onCreateJapanTemplate={createJapanTemplateTrip}
-          onImportLocal={importLocalPlanner}
-          onImportFile={handlePickerImportFile}
-          onSignOut={handleSignOut}
-        />
-        {isCreateTripOpen ? (
-          <CreateTripModal
-            defaultTravelerName={getAccountDisplayName(session.user)}
-            onCancel={() => setIsCreateTripOpen(false)}
-            onCreate={createCustomTrip}
-          />
-        ) : null}
-      </>
+      <TripPicker
+        email={session.user.email}
+        trips={tripSummaries}
+        status={tripListStatus}
+        pickerFileInputRef={pickerFileInputRef}
+        onRefresh={() => refreshTripSummaries()}
+        onSelect={selectTrip}
+        onCreateTrip={createGuidedTrip}
+        onCreateJapanTemplate={createJapanTemplateTrip}
+        onImportFile={handlePickerImportFile}
+        onSignOut={handleSignOut}
+      />
     );
   }
 
@@ -2098,42 +2691,34 @@ function App() {
 
   return (
     <TagAssetsContext.Provider value={tagAssets}>
-    <div className="app-shell">
+    <div className={`app-shell is-${activeView}-view${hasDialogOpen ? " has-dialog-open" : ""}`}>
       <header className="topbar">
         <div className="brand-block">
           <img className="title-flag" src={tripMarkAsset} alt="" aria-hidden="true" />
           <div className="trip-name-wrap">
-            <input
-              className="trip-title-input"
-              value={trip.name}
-              aria-label="Trip name"
-              onChange={(event) => updateTripDetails({ name: event.target.value })}
-            />
+            <strong className="trip-title-display">{trip.name}</strong>
             <p>{dateRangeLabel}</p>
           </div>
         </div>
 
-        <ViewSwitcher activeView={activeView} ideasCount={ideasAttentionCount} expensesCount={expenseAttentionCount} onChange={setActiveView} />
+        <ViewSwitcher activeView={activeView} ideasCount={ideasAttentionCount} mapCount={mapOverview.needsLocationItems.length} expensesCount={expenseAttentionCount} onChange={setActiveView} />
 
         <div className="topbar-actions">
-          <button className="icon-button" type="button" aria-label="Choose another trip" title="Choose another trip" onClick={openTripPicker}>
-            <CalendarDays size={18} />
+          <span className={`sync-badge is-${syncStatus}`} role="status" aria-live="polite" aria-atomic="true">
+            {formatSyncStatus(syncStatus)}
+          </span>
+          <button className="ghost-button topbar-trips-button" type="button" aria-label="All trips" title="All trips" onClick={openTripPicker}>
+            <Luggage size={17} />
+            <span>Trips</span>
           </button>
-          <span className={`sync-badge is-${syncStatus}`}>{formatSyncStatus(syncStatus)}</span>
           <button className="icon-button" type="button" aria-label={`People, ${peopleCount}`} title="People" onClick={() => setIsSharingOpen(true)}>
             <Users size={17} />
             <span className="people-count-badge" aria-hidden="true">{peopleCount}</span>
           </button>
-          <button className="icon-button" type="button" aria-label="Export trip" title="Export" onClick={exportTrip}>
-            <Download size={17} />
-          </button>
-          <button className="icon-button" type="button" aria-label="Import trip" title="Import" onClick={() => fileInputRef.current?.click()}>
-            <FileUp size={17} />
+          <button className="icon-button" type="button" aria-label="Trip settings" title="Trip settings" onClick={() => openTripSettings()}>
+            <Settings size={17} />
           </button>
           <input ref={fileInputRef} className="file-input" type="file" accept="application/json" onChange={handleImportFile} />
-          <button className="icon-button" type="button" aria-label="Sign out" title="Sign out" onClick={handleSignOut}>
-            <LogOut size={18} />
-          </button>
         </div>
       </header>
 
@@ -2150,7 +2735,7 @@ function App() {
             setSelectedDayId(dayId);
             setActiveView("day");
           }}
-          onAddDay={addTripDay}
+          onAddDay={() => addTripDay()}
         />
 
         <DayTimeline
@@ -2178,11 +2763,12 @@ function App() {
           hidden={activeView !== "trip"}
           mode={tripBoardMode}
           dateRangeLabel={dateRangeLabel}
-          onModeChange={setTripBoardMode}
+          onModeChange={handleTripBoardModeChange}
           onOpenDay={(dayId) => {
             setSelectedDayId(dayId);
             setActiveView("day");
           }}
+          onCheckDay={openRoutePlannerForDay}
           onScheduleMove={moveScheduleItem}
           onScheduleResize={resizeScheduleItem}
           onAddScheduleAt={openNewScheduleModalForDay}
@@ -2190,38 +2776,77 @@ function App() {
           onEditDay={(day) => setEditingDay(day)}
         />
 
-        <IdeasSection
-          ideas={filteredIdeas}
-          allIdeas={trip.ideas}
-          hidden={activeView !== "ideas"}
-          travelers={trip.travelers}
-          currentTravelerName={currentTravelerName}
-          ideaTab={ideaTab}
-          categoryFilter={categoryFilter}
-          onTabChange={setIdeaTab}
-          onCategoryChange={setCategoryFilter}
-          onAddIdea={openNewIdeaModal}
-          onEditIdea={setEditingIdea}
-          onDeleteIdea={deleteIdea}
-          onVote={cycleVote}
-          onPromote={openIdeaPromotion}
-        />
+        {hasVisitedIdeas ? (
+          <IdeasSection
+            ideas={trip.ideas}
+            allIdeas={trip.ideas}
+            hidden={activeView !== "ideas"}
+            currentTravelerName={currentTravelerName}
+            missingLocationIdeaIds={missingLocationIdeaIds}
+            tagAssets={tagAssets}
+            showWelcome={shouldShowIdeasWelcome(ideasOnboardingState, trip.ideas.length)}
+            canFindInspiration={trip.ideas.length === 0 && ideasOnboardingState !== IDEAS_ONBOARDING_STATES.PENDING}
+            destination={trip.days[0]?.city ?? ""}
+            mapsProfile={mapsProfile}
+            onAddIdea={openNewIdeaModal}
+            onDismissWelcome={() => setIdeasOnboarding(IDEAS_ONBOARDING_STATES.SKIPPED)}
+            onFindInspiration={() => setIdeasOnboarding(IDEAS_ONBOARDING_STATES.PENDING)}
+            onSaveSuggestedIdeas={saveSuggestedIdeas}
+            onEditIdea={setEditingIdea}
+            onDeleteIdea={deleteIdea}
+            openReactionPickerId={openReactionPickerId}
+            onToggleReactionPicker={(ideaId) => setOpenReactionPickerId((current) => (current === ideaId ? "" : ideaId))}
+            onReact={setIdeaReaction}
+            onPromote={openIdeaPromotion}
+          />
+        ) : null}
 
-        <ExpensesSection
-          hidden={activeView !== "expenses"}
-          trip={trip}
-          status={expensesStatus}
-          expenses={expenses}
-          suggestions={expenseSuggestions}
-          summary={expenseSummary}
-          travelers={travelerOptions}
-          currentTravelerClientId={currentTravelerClientId}
-          onAddExpense={openManualExpense}
-          onTrackSuggestion={openTrackedExpense}
-          onEditExpense={openEditExpense}
-          onDeleteExpense={removeExpense}
-        />
+        {activeView === "map" ? (
+          <MapSection
+            trip={trip}
+            tripId={selectedTripId}
+            days={sortedDays}
+            selectedDay={selectedDay}
+            mapsProfile={mapsProfile}
+            tagAssets={tagAssets}
+            mapOverview={mapOverview}
+            onAddIdea={openNewIdeaModal}
+            onAddActivity={openNewScheduleModal}
+            onOpenDay={openTripDayDetails}
+            onPromoteIdea={openIdeaPromotion}
+            onEditItem={(item) => {
+              if (item.source === "idea") {
+                setEditingIdea(item.sourceItem);
+                return;
+              }
+              setEditingSchedule({ mode: "edit", dayId: item.dayId, item: item.sourceItem });
+            }}
+          />
+        ) : null}
+
+        {hasVisitedExpenses ? (
+          <ExpensesSection
+            hidden={activeView !== "expenses"}
+            trip={trip}
+            status={expensesStatus}
+            expenses={expenses}
+            travelers={travelerOptions}
+            tagAssets={tagAssets}
+            currentTravelerClientId={currentTravelerClientId}
+            onAddExpense={openManualExpense}
+            onTrackSuggestion={openTrackedExpense}
+            onEditExpense={openEditExpense}
+          />
+        ) : null}
       </main>
+
+      <MobileBottomNav
+        activeView={activeView}
+        ideasCount={ideasAttentionCount}
+        mapCount={mapOverview.needsLocationItems.length}
+        expensesCount={expenseAttentionCount}
+        onChange={setActiveView}
+      />
 
       <TravelStrip />
 
@@ -2264,13 +2889,16 @@ function App() {
       ) : null}
 
       {ideaPromotion ? (
-        <PromoteIdeaModal
-          promotion={ideaPromotion}
-          days={sortedDays}
-          onDayChange={(dayId) => setIdeaPromotion((current) => (current ? { ...current, dayId } : current))}
-          onCancel={() => setIdeaPromotion(null)}
-          onContinue={() => promoteIdeaToDay(ideaPromotion.idea, ideaPromotion.dayId)}
-        />
+        <React.Suspense fallback={<FeatureLoading label="idea editor" />}>
+          <LazyPromoteIdeaModal
+            promotion={ideaPromotion}
+            days={sortedDays}
+            tagAssets={tagAssets}
+            onDayChange={(dayId) => setIdeaPromotion((current) => (current ? { ...current, dayId } : current))}
+            onCancel={() => setIdeaPromotion(null)}
+            onContinue={() => promoteIdeaToDay(ideaPromotion.idea, ideaPromotion.dayId)}
+          />
+        </React.Suspense>
       ) : null}
 
       {editingIdea ? (
@@ -2295,14 +2923,16 @@ function App() {
       ) : null}
 
       {editingExpense ? (
-        <ExpenseModal
-          mode={editingExpense.mode}
-          expense={editingExpense.expense}
-          travelers={travelerOptions}
-          onCancel={() => setEditingExpense(null)}
-          onSave={saveExpense}
-          onDelete={editingExpense.mode === "edit" ? () => removeExpense(editingExpense.expense.clientId) : null}
-        />
+        <React.Suspense fallback={<FeatureLoading label="expense editor" />}>
+          <LazyExpenseModal
+            mode={editingExpense.mode}
+            expense={editingExpense.expense}
+            travelers={travelerOptions}
+            onCancel={() => setEditingExpense(null)}
+            onSave={saveExpense}
+            onDelete={editingExpense.mode === "edit" ? () => removeExpense(editingExpense.expense.clientId) : null}
+          />
+        </React.Suspense>
       ) : null}
 
       {editingDay ? (
@@ -2321,9 +2951,61 @@ function App() {
               ...options
             })
           }
-          onCancel={() => setEditingDay(null)}
+          onCancel={cancelDayEditing}
           onSave={saveTripDay}
-          onDelete={() => deleteTripDay(editingDay.id)}
+          onDelete={() => requestTripDayRemoval(editingDay, { returnToSettings: Boolean(settingsReturnSection) })}
+        />
+      ) : null}
+
+      {isTripSettingsOpen ? (
+        <TripSettingsModal
+          activeSection={tripSettingsSection}
+          canEditTrip={canEditTrip}
+          canDeleteTrip={canDeleteTrip}
+          canRemoveDay={sortedDays.length > 1}
+          currentRole={formatRoleLabel(currentMember?.role ?? "editor")}
+          dateRangeLabel={dateRangeLabel}
+          days={sortedDays}
+          memberCount={collaboration.members.length}
+          nameDraft={tripSettingsNameDraft}
+          peopleCount={peopleCount}
+          tripName={trip.name}
+          tripMarkAsset={tripMarkAsset}
+          travelerCount={collaboration.travelers.length || trip.travelers.length}
+          onAddDay={() => addTripDay({ returnToSettings: true })}
+          onCancelGeneral={() => setTripSettingsNameDraft(trip.name ?? "")}
+          onChangeName={setTripSettingsNameDraft}
+          onChangeSection={setTripSettingsSection}
+          onClose={closeTripSettings}
+          onDeleteTrip={requestTripDeletion}
+          onEditDay={editTripDayFromSettings}
+          onExport={exportTrip}
+          onImport={importFromSettings}
+          onManagePeople={openPeopleFromSettings}
+          onRemoveDay={(day) => requestTripDayRemoval(day, { returnToSettings: true })}
+          onReset={resetFromSettings}
+          onSaveGeneral={saveTripSettingsGeneral}
+        />
+      ) : null}
+
+      {dayRemovalCandidate ? (
+        <RemoveDayConfirmation
+          day={dayRemovalCandidate}
+          canRemove={sortedDays.length > 1}
+          onCancel={() => {
+            setDayRemovalCandidate(null);
+            returnToTripSettings();
+          }}
+          onConfirm={confirmTripDayRemoval}
+        />
+      ) : null}
+
+      {isTripDeleteConfirmationOpen ? (
+        <DeleteTripConfirmation
+          tripName={trip.name}
+          isDeleting={isDeletingTrip}
+          onCancel={cancelTripDeletion}
+          onConfirm={confirmTripDeletion}
         />
       ) : null}
 
@@ -2335,7 +3017,7 @@ function App() {
               This file contains {pendingImport.days.length} days and {pendingImport.ideas.length} ideas. Choose how to bring it into this Supabase trip.
             </p>
             <div className="dialog-actions">
-              <button className="ghost-button" type="button" onClick={() => setPendingImport(null)}>
+              <button className="ghost-button" type="button" data-dialog-close onClick={() => setPendingImport(null)}>
                 Cancel
               </button>
               <button className="ghost-button" type="button" onClick={mergeImportIdeas}>
@@ -2367,7 +3049,7 @@ function App() {
           onRevokeInvite={handleRevokeInvite}
           onClaimTraveler={handleClaimTraveler}
           onRenameTraveler={handleRenameTraveler}
-          onClose={() => setIsSharingOpen(false)}
+          onClose={closePeopleDialog}
         />
       ) : null}
 
@@ -2400,54 +3082,19 @@ function AuthScreen({ email, password, message, onEmailChange, onPasswordChange,
   return (
     <main className="auth-shell auth-landing-shell">
       <section className="auth-landing" aria-labelledby="auth-title">
-        <div className="auth-landing-brand">
-          <img className="title-flag" src={GENERIC_TRIP_MARK_ASSET} alt="" aria-hidden="true" />
-          <strong>Japan 2026</strong>
-        </div>
-
         <div className="auth-hero">
           <div className="auth-hero-copy">
-            <h1 id="auth-title">Plan the trip together</h1>
-            <p>Sync plans, ideas, bookings, and day-by-day details for Japan 2026.</p>
-          </div>
-
-          <div className="auth-preview-card" aria-hidden="true">
-            <div className="auth-preview-top">
-              <span>
-                <img src={GENERIC_TRIP_MARK_ASSET} alt="" />
-                Japan 2026
-              </span>
-              <strong>Synced</strong>
-            </div>
-            <div className="auth-preview-days">
-              {[
-                ["Sep 25", "Tokyo", "tag-food.png"],
-                ["Sep 26", "Kyoto", "tag-culture.png"],
-                ["Sep 27", "Osaka", "tag-transit.png"],
-                ["Sep 28", "Hakone", "tag-hotel.png"]
-              ].map(([date, city, icon]) => (
-                <span className="auth-preview-day" key={date}>
-                  <small>{date}</small>
-                  <strong>{city}</strong>
-                  <img src={`${ICON_BASE}${icon}`} alt="" />
-                </span>
-              ))}
-              <span className="auth-preview-add">+</span>
-            </div>
-            <div className="auth-preview-tags">
-              {["tag-food.png", "tag-culture.png", "tag-transit.png", "tag-hotel.png", "tag-shopping.png", "tag-open-time.png", "tag-map-pin.png"].map((icon) => (
-                <span key={icon}>
-                  <img src={`${ICON_BASE}${icon}`} alt="" />
-                </span>
-              ))}
-            </div>
+            <h1 id="auth-title">
+              <img className="auth-hero-logo" src={KUMI_PLANNER_LOGO_ASSET} alt="Kumi Planner" />
+            </h1>
+            <p>Bring your itinerary, ideas, bookings, and day-by-day plans into one shared space.</p>
           </div>
 
           <div className="auth-benefits" aria-label="Planner benefits">
             <span>
               <img src={`${ICON_BASE}tag-favorite.png`} alt="" aria-hidden="true" />
               <strong>Plan together</strong>
-              <small>Share ideas and votes.</small>
+              <small>Share ideas and reactions.</small>
             </span>
             <span>
               <img src={`${ICON_BASE}tag-flexible.png`} alt="" aria-hidden="true" />
@@ -2507,150 +3154,375 @@ function TripPicker({
   onSelect,
   onCreateTrip,
   onCreateJapanTemplate,
-  onImportLocal,
   onImportFile,
   onSignOut
 }) {
-  const isLoading = status === "loading";
+  const isLoading = status === "idle" || status === "loading";
+  const hasLoadError = status === "error";
+  const isFirstTrip = status === "ready" && trips.length === 0;
+  const [setupMode, setSetupMode] = useState("");
+  const showTripSetup = isFirstTrip || Boolean(setupMode);
+  const isFirstTripSetup = isFirstTrip || setupMode === "first";
+
+  useEffect(() => {
+    if (isFirstTrip && !setupMode) {
+      setSetupMode("first");
+    }
+  }, [isFirstTrip, setupMode]);
+
+  function startTemplateTrip() {
+    onCreateJapanTemplate();
+  }
 
   return (
     <main className="trip-picker-shell">
-      <section className="trip-picker" aria-labelledby="trip-picker-title">
-        <header className="trip-picker-header">
-          <div className="auth-brand">
-            <img className="title-flag" src={GENERIC_TRIP_MARK_ASSET} alt="" aria-hidden="true" />
+      <section className="trip-picker" aria-labelledby={showTripSetup ? "first-trip-setup-title" : "trip-picker-title"}>
+        <header className="trip-picker-topbar">
+          <div className="trip-picker-brand">
+            <img className="title-flag" src={GENERIC_TRIP_NAV_ASSET} alt="" aria-hidden="true" />
             <div>
+              <strong>Travel planner</strong>
               <p>{email}</p>
-              <h1 id="trip-picker-title">Choose a trip</h1>
             </div>
           </div>
-          <button className="icon-button" type="button" aria-label="Sign out" onClick={onSignOut}>
+          <button className="trip-picker-logout" type="button" onClick={onSignOut}>
             <LogOut size={18} />
+            <span>Log out</span>
           </button>
         </header>
 
-        <div className="trip-picker-actions">
-          <button className="primary-button" type="button" onClick={onCreateTrip} disabled={isLoading}>
-            <Plus size={17} />
-            Create trip
-          </button>
-          <button className="ghost-button" type="button" onClick={onCreateJapanTemplate} disabled={isLoading}>
-            <CalendarDays size={17} />
-            Japan 2026 template
-          </button>
-          <button className="ghost-button" type="button" onClick={onImportLocal} disabled={isLoading}>
-            <RefreshCcw size={17} />
-            Import local planner
-          </button>
-          <button className="ghost-button" type="button" onClick={() => pickerFileInputRef.current?.click()} disabled={isLoading}>
-            <FileUp size={17} />
-            Import JSON
-          </button>
-          <button className="ghost-button" type="button" onClick={onRefresh} disabled={isLoading}>
-            <RefreshCcw size={17} />
-            Refresh
-          </button>
-          <input ref={pickerFileInputRef} className="file-input" type="file" accept="application/json" onChange={onImportFile} />
-        </div>
+        {!showTripSetup ? (
+          <div className="trip-picker-hero">
+            <div className="trip-picker-copy">
+              <h1 id="trip-picker-title">Your trips</h1>
+              <p>Pick up an existing itinerary or start a new one from a clean planning workspace.</p>
+            </div>
+          </div>
+        ) : null}
 
-        <div className="trip-list">
-          {trips.map((tripSummary) => (
+        <input ref={pickerFileInputRef} className="file-input" type="file" accept="application/json" onChange={onImportFile} />
+
+        <div className={`trip-list${showTripSetup ? " is-trip-setup" : ""}`}>
+          {showTripSetup && !isFirstTripSetup ? (
+            <div className="trip-setup-navigation">
+              <button className="trip-setup-back" type="button" onClick={() => setSetupMode("")}>
+                <ChevronLeft size={17} aria-hidden="true" />
+                Back to your trips
+              </button>
+            </div>
+          ) : null}
+          {showTripSetup ? (
+            <TripSetup
+              isFirstTrip={isFirstTripSetup}
+              onCreate={onCreateTrip}
+              onImport={() => pickerFileInputRef.current?.click()}
+              onUseTemplate={startTemplateTrip}
+            />
+          ) : null}
+          {!showTripSetup && isLoading ? (
+            Array.from({ length: 3 }, (_, index) => (
+              <article className="trip-list-item is-loading" key={`trip-loading-${index}`} aria-hidden="true">
+                <span className="trip-card-cover" />
+                <span className="trip-card-body">
+                  <span className="trip-card-line is-title" />
+                  <span className="trip-card-line" />
+                  <span className="trip-card-line is-short" />
+                </span>
+              </article>
+            ))
+          ) : null}
+
+          {!showTripSetup && hasLoadError ? (
+            <div className="empty-trip-list">
+              <strong>Trips could not be loaded</strong>
+              <span>Check the connection and try again before creating another trip.</span>
+              <button className="ghost-button" type="button" onClick={onRefresh}><RefreshCcw size={16} />Try again</button>
+            </div>
+          ) : null}
+
+          {!showTripSetup && !isLoading && trips.map((tripSummary) => (
             <button className="trip-list-item" key={tripSummary.id} type="button" onClick={() => onSelect(tripSummary.id)}>
-              <span>
-                <strong>{tripSummary.name}</strong>
-                <small>{tripSummary.dateRangeLabel || "No date range"} · {tripSummary.role}</small>
+              <span className="trip-card-cover" aria-hidden="true">
+                <img src={GENERIC_TRIP_COVER_ASSET} alt="" />
+                <span className="trip-card-cover-badge">
+                  <img src={GENERIC_TRIP_NAV_ASSET} alt="" />
+                </span>
               </span>
-              <ExternalLink size={16} />
+              <span className="trip-card-body">
+                <span className="trip-card-heading">
+                  <strong>{tripSummary.name}</strong>
+                  <small>{tripSummary.role}</small>
+                </span>
+                <span className="trip-card-meta">
+                  <span>
+                    <img src={GENERIC_CALENDAR_ASSET} alt="" aria-hidden="true" />
+                    {tripSummary.dateRangeLabel || "No date range yet"}
+                  </span>
+                </span>
+              </span>
             </button>
           ))}
-          {!trips.length && !isLoading ? <p className="empty-trip-list">No Supabase trips yet. Create a trip or import your local planner.</p> : null}
-          {isLoading ? <p className="empty-trip-list">Loading trips...</p> : null}
+
+          {!showTripSetup && status === "ready" ? (
+            <button
+              className="trip-list-item trip-create-card"
+              type="button"
+              onClick={() => setSetupMode("additional")}
+            >
+              <span className="trip-create-visual" aria-hidden="true">
+                <span>
+                  <Plus size={34} />
+                </span>
+              </span>
+              <span className="trip-card-body">
+                <span className="trip-card-heading">
+                  <strong>New trip</strong>
+                  <small>Start here</small>
+                </span>
+                <span className="trip-card-meta">
+                  <span>
+                    <img src={GENERIC_FLEXIBLE_ASSET} alt="" aria-hidden="true" />
+                    Blank workspace
+                  </span>
+                </span>
+              </span>
+            </button>
+          ) : null}
         </div>
       </section>
     </main>
   );
 }
 
-function CreateTripModal({ defaultTravelerName = "Traveler", onCancel, onCreate }) {
+function TripSetup({ isFirstTrip, onCreate, onImport, onUseTemplate }) {
   const today = getTodayDate();
-  const initialTravelerName = String(defaultTravelerName ?? "").trim() || "Traveler";
+  return (
+    <React.Suspense fallback={<FeatureLoading label="trip setup" />}>
+      <LazyValidatedForm schema="firstTrip" defaultValues={{ name: "", city: "", startDate: today, endDate: today }}>
+        {(form) => <TripSetupContent form={form} today={today} isFirstTrip={isFirstTrip} onCreate={onCreate} onImport={onImport} onUseTemplate={onUseTemplate} />}
+      </LazyValidatedForm>
+    </React.Suspense>
+  );
+}
+
+function TripSetupContent({ form, today, isFirstTrip, onCreate, onImport, onUseTemplate }) {
   const {
-    formState: { errors },
-    getValues,
+    formState: { errors, isSubmitting },
     handleSubmit,
     register,
-    setValue
-  } = useForm({
-    resolver: zodResolver(CREATE_TRIP_FORM_SCHEMA),
-    defaultValues: {
-      name: "",
-      startDate: today,
-      endDate: today,
-      city: "",
-      travelerName: initialTravelerName
-    }
-  });
-  const [endDateMin, setEndDateMin] = useState(today);
-  const startDateField = register("startDate");
-  const endDateField = register("endDate");
+    setValue,
+    watch
+  } = form;
+  const startDate = watch("startDate");
+  const endDate = watch("endDate");
+  const [isDateRangePickerOpen, setIsDateRangePickerOpen] = useState(false);
+  const [dateRangeDraft, setDateRangeDraft] = useState(null);
+  const [calendarMonth, setCalendarMonth] = useState(() => getCalendarMonth(today));
 
-  function keepEndDateAfterStart(event) {
-    const nextStartDate = event.target.value;
-    setEndDateMin(nextStartDate || today);
-    const endDateElement = event.currentTarget.form?.elements.namedItem("endDate");
-    const currentEndDate = typeof endDateElement?.value === "string" ? endDateElement.value : getValues("endDate");
-
-    if (nextStartDate && currentEndDate && dateSortValue(currentEndDate) < dateSortValue(nextStartDate)) {
-      setValue("endDate", nextStartDate, { shouldDirty: true, shouldValidate: true });
-    }
+  function openDateRangePicker() {
+    setDateRangeDraft({ startDate, endDate });
+    setCalendarMonth(getCalendarMonth(startDate || today));
+    setIsDateRangePickerOpen(true);
   }
 
-  function handleStartDateChange(event) {
-    startDateField.onChange(event);
-    keepEndDateAfterStart(event);
+  function selectDateRangeDay(nextDate) {
+    setDateRangeDraft((current) => {
+      if (!current?.startDate || current.endDate) {
+        return { startDate: nextDate, endDate: "" };
+      }
+
+      return nextDate < current.startDate
+        ? { startDate: nextDate, endDate: current.startDate }
+        : { startDate: current.startDate, endDate: nextDate };
+    });
+  }
+
+  function applyDateRange() {
+    if (!dateRangeDraft?.startDate || !dateRangeDraft.endDate) {
+      return;
+    }
+    setValue("startDate", dateRangeDraft.startDate, { shouldDirty: true, shouldValidate: true });
+    setValue("endDate", dateRangeDraft.endDate, { shouldDirty: true, shouldValidate: true });
+    setIsDateRangePickerOpen(false);
   }
 
   return (
-    <div className="dialog-backdrop" role="presentation">
-      <div className="dialog editor-dialog" role="dialog" aria-modal="true" aria-label="Create trip">
-        <DialogHeader title="Create trip" onClose={onCancel} />
-        <form className="form-grid" onSubmit={handleSubmit(onCreate)}>
-          <label className="span-two">
-            Trip name
-            <input {...register("name")} autoFocus placeholder="Summer vacation, Birthday weekend..." />
-            {errors.name ? <small className="form-error">{errors.name.message}</small> : null}
-          </label>
-          <label>
-            Start date
-            <input {...startDateField} type="date" onChange={handleStartDateChange} onInput={handleStartDateChange} />
-            {errors.startDate ? <small className="form-error">{errors.startDate.message}</small> : null}
-          </label>
-          <label>
-            End date
-            <input {...endDateField} type="date" min={endDateMin} />
-            {errors.endDate ? <small className="form-error">{errors.endDate.message}</small> : null}
-          </label>
-          <label>
-            First city or area
-            <input {...register("city")} placeholder="Optional" />
-          </label>
-          <label>
-            Your traveler name
-            <input {...register("travelerName")} />
-            {errors.travelerName ? <small className="form-error">{errors.travelerName.message}</small> : null}
-          </label>
-          <div className="dialog-actions span-two">
-            <button className="ghost-button" type="button" onClick={onCancel}>
-              Cancel
-            </button>
-            <button className="primary-button" type="submit">
-              Create trip
-            </button>
+    <>
+      <section className="first-trip-setup" aria-labelledby="first-trip-setup-title">
+        <div className="first-trip-form-wrap">
+          <div className="first-trip-heading">
+            <img className="first-trip-cover-tile" src={GENERIC_TRIP_COVER_ASSET} alt="" aria-hidden="true" />
+            <div>
+              <h1 id="first-trip-setup-title">{isFirstTrip ? "Create your first trip" : "Plan a new trip"}</h1>
+              <p>Just enough to open the planning workspace.</p>
+            </div>
           </div>
-        </form>
-      </div>
+          <form className="first-trip-form" onSubmit={handleSubmit(onCreate)}>
+            <label>
+              Trip name
+              <input {...register("name")} autoFocus placeholder="Summer in Japan, Birthday weekend..." />
+              {errors.name ? <small className="form-error">{errors.name.message}</small> : null}
+            </label>
+            <label>
+              First destination
+              <span className="first-trip-input-with-icon">
+                <img src={`${ICON_BASE}tag-map-pin-generic.png`} alt="" aria-hidden="true" />
+                <input {...register("city")} autoComplete="off" placeholder="City or region" />
+              </span>
+              {errors.city ? <small className="form-error">{errors.city.message}</small> : null}
+            </label>
+            <div className="first-trip-date-field">
+              <span>Trip dates</span>
+              <input type="hidden" {...register("startDate")} />
+              <input type="hidden" {...register("endDate")} />
+              <button className="first-trip-date-trigger" type="button" onClick={openDateRangePicker} aria-haspopup="dialog">
+                <CalendarDays size={19} aria-hidden="true" />
+                <span>{formatTripSetupDateRange(startDate, endDate)}</span>
+                <ChevronDown size={18} aria-hidden="true" />
+              </button>
+              {errors.startDate || errors.endDate ? <small className="form-error">{errors.startDate?.message ?? errors.endDate?.message}</small> : null}
+            </div>
+            <button className="primary-button first-trip-submit" type="submit" disabled={isSubmitting}>
+              {isSubmitting ? "Creating trip..." : "Create trip and add ideas"}
+              <ArrowRight size={17} aria-hidden="true" />
+            </button>
+          </form>
+          <details className="first-trip-alternatives">
+            <summary>
+              <span>Other ways to start</span>
+              <ChevronDown size={18} aria-hidden="true" />
+            </summary>
+            <div className="first-trip-alternative-options">
+              <button type="button" onClick={onImport}>
+                <FileUp size={18} aria-hidden="true" />
+                <span>
+                  <strong>Import an existing trip</strong>
+                  <small>Bring in a saved planner file</small>
+                </span>
+                <ChevronRight size={18} aria-hidden="true" />
+              </button>
+              <button type="button" onClick={onUseTemplate}>
+                <CalendarDays size={18} aria-hidden="true" />
+                <span>
+                  <strong>Use the Japan starter plan</strong>
+                  <small>Start from the pre-filled itinerary</small>
+                </span>
+                <ChevronRight size={18} aria-hidden="true" />
+              </button>
+            </div>
+          </details>
+        </div>
+      </section>
+      {isDateRangePickerOpen ? (
+        <TripDateRangePicker
+          month={calendarMonth}
+          range={dateRangeDraft}
+          onClose={() => setIsDateRangePickerOpen(false)}
+          onMonthChange={setCalendarMonth}
+          onSelectDate={selectDateRangeDay}
+          onApply={applyDateRange}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function TripDateRangePicker({ month, range, onClose, onMonthChange, onSelectDate, onApply }) {
+  const calendarDays = getCalendarMonthDays(month);
+  const rangeIsComplete = Boolean(range?.startDate && range?.endDate);
+
+  return (
+    <div className="dialog-backdrop trip-date-range-backdrop" role="presentation">
+      <section className="dialog trip-date-range-dialog" role="dialog" aria-modal="true" aria-labelledby="trip-date-range-title">
+        <div className="trip-date-range-header">
+          <div>
+            <h2 id="trip-date-range-title">Choose trip dates</h2>
+            <p>Select a start date, then an end date.</p>
+          </div>
+          <button className="icon-button" type="button" aria-label="Close date picker" data-dialog-close onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+        <div className="trip-date-range-month-nav">
+          <button className="icon-button" type="button" aria-label="Previous month" onClick={() => onMonthChange(addCalendarMonths(month, -1))}>
+            <ChevronLeft size={18} />
+          </button>
+          <strong aria-live="polite">{formatCalendarMonth(month)}</strong>
+          <button className="icon-button" type="button" aria-label="Next month" onClick={() => onMonthChange(addCalendarMonths(month, 1))}>
+            <ChevronRight size={18} />
+          </button>
+        </div>
+        <div className="trip-date-range-weekdays" aria-hidden="true">
+          {CALENDAR_WEEKDAYS.map((day) => <span key={day}>{day}</span>)}
+        </div>
+        <div className="trip-date-range-grid">
+          {calendarDays.map((dateValue, index) => {
+            if (!dateValue) {
+              return <span className="trip-date-range-empty" key={`empty-${index}`} aria-hidden="true" />;
+            }
+            const isStart = dateValue === range?.startDate;
+            const isEnd = dateValue === range?.endDate;
+            const isInRange = Boolean(range?.startDate && range?.endDate && dateValue > range.startDate && dateValue < range.endDate);
+            return (
+              <button
+                className={`trip-date-range-day${isStart ? " is-start" : ""}${isEnd ? " is-end" : ""}${isInRange ? " is-in-range" : ""}`}
+                type="button"
+                key={dateValue}
+                aria-label={formatCalendarDayLabel(dateValue)}
+                aria-pressed={isStart || isEnd}
+                onClick={() => onSelectDate(dateValue)}
+              >
+                {Number(dateValue.slice(-2))}
+              </button>
+            );
+          })}
+        </div>
+        <div className="trip-date-range-actions">
+          <button className="primary-button" type="button" disabled={!rangeIsComplete} onClick={onApply}>Apply dates</button>
+        </div>
+      </section>
     </div>
   );
+}
+
+const CALENDAR_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function getCalendarMonth(dateValue) {
+  const date = new Date(`${dateValue}T12:00:00`);
+  return Number.isNaN(date.getTime()) ? new Date() : new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function addCalendarMonths(month, offset) {
+  return new Date(month.getFullYear(), month.getMonth() + offset, 1);
+}
+
+function getCalendarMonthDays(month) {
+  const leadingEmptyDays = new Date(month.getFullYear(), month.getMonth(), 1).getDay();
+  const daysInMonth = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+  return [
+    ...Array.from({ length: leadingEmptyDays }, () => ""),
+    ...Array.from({ length: daysInMonth }, (_, index) => formatDateInputValue(new Date(month.getFullYear(), month.getMonth(), index + 1)))
+  ];
+}
+
+function formatDateInputValue(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function formatCalendarMonth(month) {
+  return new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" }).format(month);
+}
+
+function formatCalendarDayLabel(dateValue) {
+  return new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(new Date(`${dateValue}T12:00:00`));
+}
+
+function formatTripSetupDateRange(startDate, endDate) {
+  if (!startDate || !endDate) {
+    return "Choose your trip dates";
+  }
+  const formatter = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return `${formatter.format(new Date(`${startDate}T12:00:00`))} – ${formatter.format(new Date(`${endDate}T12:00:00`))}`;
 }
 
 function ConfigState({ title, message, actionLabel, onAction }) {
@@ -2675,6 +3547,15 @@ function ConfigState({ title, message, actionLabel, onAction }) {
   );
 }
 
+function FeatureLoading({ label }) {
+  return (
+    <section className="feature-loading" role="status" aria-live="polite">
+      <strong>Loading {label}</strong>
+      <span>Preparing this planner section.</span>
+    </section>
+  );
+}
+
 function TagIcon({ src, size = "chip" }) {
   if (!src) {
     return null;
@@ -2683,23 +3564,297 @@ function TagIcon({ src, size = "chip" }) {
   return <img className={`tag-icon tag-icon-${size}`} src={src} alt="" aria-hidden="true" draggable={false} />;
 }
 
-function ViewSwitcher({ activeView, ideasCount, expensesCount, onChange }) {
+function ViewSwitcher({ activeView, ideasCount, mapCount, expensesCount, onChange }) {
   return (
-    <div className="view-switcher" aria-label="Planner view">
-      <button className={activeView === "trip" ? "is-active" : ""} type="button" onClick={() => onChange("trip")}>
+    <nav className="view-switcher" aria-label="Planner view">
+      <button className={activeView === "trip" ? "is-active" : ""} type="button" aria-current={activeView === "trip" ? "page" : undefined} onClick={() => onChange("trip")}>
         All Trip
       </button>
-      <button className={activeView === "day" ? "is-active" : ""} type="button" onClick={() => onChange("day")}>
-        Day View
-      </button>
-      <button className={activeView === "ideas" ? "is-active" : ""} type="button" onClick={() => onChange("ideas")}>
+      <button className={activeView === "ideas" ? "is-active" : ""} type="button" aria-current={activeView === "ideas" ? "page" : undefined} onClick={() => onChange("ideas")}>
         Ideas
         {ideasCount > 0 ? <span>{ideasCount}</span> : null}
       </button>
-      <button className={activeView === "expenses" ? "is-active" : ""} type="button" onClick={() => onChange("expenses")}>
+      <button className={activeView === "map" ? "is-active" : ""} type="button" aria-current={activeView === "map" ? "page" : undefined} onClick={() => onChange("map")}>
+        Map
+        {mapCount > 0 ? <span>{mapCount}</span> : null}
+      </button>
+      <button className={activeView === "expenses" ? "is-active" : ""} type="button" aria-current={activeView === "expenses" ? "page" : undefined} onClick={() => onChange("expenses")}>
         Expenses
         {expensesCount > 0 ? <span>{expensesCount}</span> : null}
       </button>
+    </nav>
+  );
+}
+
+function MobileBottomNav({ activeView, ideasCount, mapCount, expensesCount, onChange }) {
+  const counts = {
+    ideas: ideasCount,
+    map: mapCount,
+    expenses: expensesCount
+  };
+
+  return (
+    <nav className="mobile-bottom-nav" aria-label="Planner sections">
+      {MOBILE_NAV_ITEMS.map(({ id, label, iconSrc }) => (
+        <button className={activeView === id ? "is-active" : ""} key={id} type="button" onClick={() => onChange(id)} aria-current={activeView === id ? "page" : undefined}>
+          <span className="mobile-bottom-nav-icon">
+            <img src={`${ICON_BASE}${iconSrc}`} alt="" aria-hidden="true" draggable={false} />
+            {counts[id] > 0 ? <span className="mobile-bottom-nav-badge">{counts[id]}</span> : null}
+          </span>
+          <span>{label}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+const TRIP_SETTINGS_SECTIONS = [
+  { id: "general", label: "General", icon: Settings },
+  { id: "days", label: "Days", icon: CalendarDays },
+  { id: "people", label: "People", icon: Users },
+  { id: "data", label: "Data & safety", icon: Download }
+];
+
+function TripSettingsModal({
+  activeSection,
+  canEditTrip,
+  canDeleteTrip,
+  canRemoveDay,
+  currentRole,
+  dateRangeLabel,
+  days,
+  memberCount,
+  nameDraft,
+  peopleCount,
+  tripName,
+  tripMarkAsset,
+  travelerCount,
+  onAddDay,
+  onCancelGeneral,
+  onChangeName,
+  onChangeSection,
+  onClose,
+  onDeleteTrip,
+  onEditDay,
+  onExport,
+  onImport,
+  onManagePeople,
+  onRemoveDay,
+  onReset,
+  onSaveGeneral
+}) {
+  return (
+    <div className="dialog-backdrop trip-settings-backdrop" role="presentation">
+      <div className="dialog trip-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="trip-settings-title">
+        <div className="trip-settings-header">
+          <div className="trip-settings-identity">
+            <img src={tripMarkAsset} alt="" aria-hidden="true" />
+            <div>
+              <h2 id="trip-settings-title">Trip settings</h2>
+              <p><strong>{tripName}</strong><span>{dateRangeLabel}</span></p>
+            </div>
+          </div>
+          <button className="icon-button" type="button" aria-label="Close trip settings" data-dialog-close onClick={onClose}>
+            <X size={19} />
+          </button>
+        </div>
+
+        <div className="trip-settings-layout">
+          <nav className="trip-settings-nav" aria-label="Trip settings sections" role="tablist">
+            {TRIP_SETTINGS_SECTIONS.map(({ id, label, icon: Icon }) => (
+              <button
+                className={activeSection === id ? "is-active" : ""}
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={activeSection === id}
+                onClick={() => onChangeSection(id)}
+              >
+                <Icon size={17} />
+                <span>{label}</span>
+              </button>
+            ))}
+          </nav>
+
+          <div className="trip-settings-content">
+            {activeSection === "general" ? (
+              <section className="trip-settings-section" role="tabpanel" aria-label="General settings">
+                <SettingsSectionHeading title="General" detail="The name identifies this itinerary. Its date range comes from the scheduled days." />
+                <form className="settings-general-form" onSubmit={(event) => {
+                  event.preventDefault();
+                  onSaveGeneral();
+                }}>
+                  <label>
+                    Trip name
+                    <input value={nameDraft} onChange={(event) => onChangeName(event.target.value)} maxLength={120} disabled={!canEditTrip} autoFocus />
+                  </label>
+                  <div className="settings-summary-grid">
+                    <span>
+                      <small>Date range</small>
+                      <strong>{dateRangeLabel || "No dates yet"}</strong>
+                    </span>
+                    <span>
+                      <small>Scheduled days</small>
+                      <strong>{days.length}</strong>
+                    </span>
+                  </div>
+                  <div className="settings-form-actions">
+                    <button className="ghost-button" type="button" disabled={nameDraft === tripName} onClick={onCancelGeneral}>Cancel changes</button>
+                    <button className="primary-button" type="submit" disabled={!canEditTrip || !nameDraft.trim() || nameDraft.trim() === tripName}>Save settings</button>
+                  </div>
+                </form>
+              </section>
+            ) : null}
+
+            {activeSection === "days" ? (
+              <section className="trip-settings-section" role="tabpanel" aria-label="Day settings">
+                <SettingsSectionHeading title="Days" detail="Dates control the itinerary order. Edit a day to change its date, area, base, or notes." />
+                <div className="settings-days-toolbar">
+                  <span>{days.length} {days.length === 1 ? "day" : "days"}</span>
+                  <button className="primary-button" type="button" disabled={!canEditTrip} onClick={onAddDay}>
+                    <Plus size={17} />
+                    Add day
+                  </button>
+                </div>
+                <div className="settings-day-list">
+                  {days.map((day) => {
+                    const hotelCount = (day.schedule ?? []).filter(isStayItem).length;
+                    const activityCount = (day.schedule ?? []).length - hotelCount;
+                    return (
+                      <article className="settings-day-row" key={day.id}>
+                        <span className="settings-day-number">{day.dayNumber}</span>
+                        <div className="settings-day-main">
+                          <strong>{day.label || `Day ${day.dayNumber}`}</strong>
+                          <span>{formatShortDate(day.date)} · {day.city || "No area"}</span>
+                          <small>
+                            {activityCount} {activityCount === 1 ? "activity" : "activities"}
+                            {hotelCount ? ` · ${hotelCount} ${hotelCount === 1 ? "hotel" : "hotels"}` : ""}
+                          </small>
+                        </div>
+                        <div className="settings-day-actions">
+                          <button className="ghost-button compact-action" type="button" disabled={!canEditTrip} onClick={() => onEditDay(day)}>Edit</button>
+                          <button className="ghost-button compact-action danger" type="button" disabled={!canEditTrip || !canRemoveDay} onClick={() => onRemoveDay(day)}>
+                            Remove
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+                {!canRemoveDay ? <p className="settings-inline-note">A trip must keep at least one day.</p> : null}
+              </section>
+            ) : null}
+
+            {activeSection === "people" ? (
+              <section className="trip-settings-section" role="tabpanel" aria-label="People settings">
+                <SettingsSectionHeading title="People" detail="Manage who can open the trip and the traveler names used for reactions and expenses." />
+                <div className="settings-people-card">
+                  <div className="settings-summary-grid">
+                    <span><small>People with access</small><strong>{memberCount || peopleCount}</strong></span>
+                    <span><small>Travelers</small><strong>{travelerCount}</strong></span>
+                    <span><small>Your access</small><strong>{currentRole}</strong></span>
+                  </div>
+                  <button className="primary-button" type="button" onClick={onManagePeople}>
+                    <Users size={17} />
+                    Manage people
+                  </button>
+                </div>
+              </section>
+            ) : null}
+
+            {activeSection === "data" ? (
+              <section className="trip-settings-section" role="tabpanel" aria-label="Data and safety settings">
+                <SettingsSectionHeading title="Data & safety" detail="Download a backup, replace this planner from a file, clear its content, or permanently delete it." />
+                <div className="settings-data-list">
+                  <SettingsActionCard icon={Download} title="Export trip" detail="Download a JSON backup of this itinerary." actionLabel="Export" onAction={onExport} />
+                  <SettingsActionCard icon={FileUp} title="Import trip" detail="Review a JSON file before replacing this planner or merging its ideas." actionLabel="Import" disabled={!canEditTrip} onAction={onImport} />
+                  <SettingsActionCard icon={Trash2} title="Reset planner" detail="Clear ideas, scheduled activities, and expenses while keeping the trip and its days." actionLabel="Reset" tone="danger" disabled={!canEditTrip} onAction={onReset} />
+                  {canDeleteTrip ? <SettingsActionCard icon={Trash2} title="Delete trip" detail="Permanently remove this trip and all of its planning data for everyone." actionLabel="Delete" tone="danger" onAction={onDeleteTrip} /> : null}
+                </div>
+              </section>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsSectionHeading({ title, detail }) {
+  return (
+    <div className="settings-section-heading">
+      <h3>{title}</h3>
+      <p>{detail}</p>
+    </div>
+  );
+}
+
+function SettingsActionCard({ icon: Icon, title, detail, actionLabel, tone = "default", disabled = false, onAction }) {
+  return (
+    <article className={`settings-action-card${tone === "danger" ? " is-danger" : ""}`}>
+      <span className="settings-action-icon"><Icon size={18} /></span>
+      <div><strong>{title}</strong><p>{detail}</p></div>
+      <button className={`ghost-button compact-action${tone === "danger" ? " danger" : ""}`} type="button" disabled={disabled} onClick={onAction}>{actionLabel}</button>
+    </article>
+  );
+}
+
+function RemoveDayConfirmation({ day, canRemove, onCancel, onConfirm }) {
+  const scheduledCount = day.schedule?.length ?? 0;
+  return (
+    <div className="dialog-backdrop remove-day-backdrop" role="presentation">
+      <div className="dialog remove-day-dialog" role="dialog" aria-modal="true" aria-labelledby="remove-day-title">
+        <div className="remove-day-icon" aria-hidden="true"><Trash2 size={22} /></div>
+        <div>
+          <h2 id="remove-day-title">Remove {day.label || `Day ${day.dayNumber}`}?</h2>
+          {scheduledCount ? (
+            <p>This day has {scheduledCount} scheduled {scheduledCount === 1 ? "activity" : "activities"}. {scheduledCount === 1 ? "It" : "They"} will be moved to Ideas so nothing is lost.</p>
+          ) : (
+            <p>This day has no scheduled activities. Removing it will update the trip date range.</p>
+          )}
+        </div>
+        <div className="dialog-actions">
+          <button className="ghost-button" type="button" data-dialog-close onClick={onCancel}>Keep day</button>
+          <button className="primary-button danger-button" type="button" disabled={!canRemove} onClick={onConfirm}>
+            <Trash2 size={17} />
+            Remove day
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeleteTripConfirmation({ tripName, isDeleting, onCancel, onConfirm }) {
+  const [confirmation, setConfirmation] = useState("");
+  const confirmationMatches = confirmation.trim() === String(tripName ?? "").trim();
+
+  return (
+    <div className="dialog-backdrop delete-trip-backdrop" role="presentation">
+      <div className="dialog delete-trip-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-trip-title">
+        <div className="remove-day-icon" aria-hidden="true"><Trash2 size={22} /></div>
+        <div>
+          <h2 id="delete-trip-title">Delete this trip?</h2>
+          <p>This permanently deletes the itinerary, ideas, expenses, invitations, and access for every traveler. This cannot be undone.</p>
+        </div>
+        <label className="delete-trip-confirmation-field">
+          Type <strong>{tripName}</strong> to confirm
+          <input
+            value={confirmation}
+            onChange={(event) => setConfirmation(event.target.value)}
+            autoComplete="off"
+            disabled={isDeleting}
+            autoFocus
+          />
+        </label>
+        <div className="dialog-actions">
+          <button className="ghost-button" type="button" data-dialog-close disabled={isDeleting} onClick={onCancel}>Keep trip</button>
+          <button className="primary-button danger-button" type="button" disabled={!confirmationMatches || isDeleting} onClick={onConfirm}>
+            <Trash2 size={17} />
+            {isDeleting ? "Deleting..." : "Delete trip"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2782,8 +3937,8 @@ function useScheduleDrag({ days, onScheduleMove, onScheduleResize, rowHeight = D
       return null;
     }
 
-    const start = getDropStartFromPointer(event.clientY, column, rowHeight);
     const duration = Number(item.duration) || TIME_GRID_STEP_MINUTES;
+    const start = getDropStartFromPointer(event.clientY, column, duration, rowHeight);
     const layout = getTimeGridBlockLayout(start, duration, rowHeight);
     return {
       ...layout,
@@ -3199,7 +4354,7 @@ function RoutePlannerModal({ day, days, planner, onPlannerChange, onApplySuggest
             <h2>{isReviewing ? "Review suggested change" : "Check day"}</h2>
             <p>{isReviewing ? "Nothing changes until you apply it." : "A quick tip to make your day smoother."}</p>
           </div>
-          <button className="icon-button" type="button" aria-label="Close day check" onClick={onClose}>
+          <button className="icon-button" type="button" aria-label="Close day check" data-dialog-close onClick={onClose}>
             <X size={18} />
           </button>
         </div>
@@ -3266,7 +4421,7 @@ function RoutePlannerModal({ day, days, planner, onPlannerChange, onApplySuggest
           <footer className="day-check-footer">
             <div className="day-check-footer-actions">
               <button className="ghost-button" type="button" onClick={onClose}>
-                Keep my day
+                {suggestion?.canApply ? "Keep as planned" : "Done"}
               </button>
               {suggestion?.canApply ? (
                 <button className="primary-button" type="button" onClick={() => onPlannerChange((current) => ({ ...current, reviewSuggestion: true }))}>
@@ -3290,7 +4445,7 @@ function DayCheckComparisonCards({ dayCheck }) {
           <DayCheckBadge label={dayCheck.sourceDayBadge} tone="heavy" />
         </div>
         <DayCheckStatusBanner tone="heavy" icon="info">
-          Too much backtracking
+          {dayCheck.currentStatusCopy}
         </DayCheckStatusBanner>
         <DayCheckTimeline titles={dayCheck.currentRouteTitles} tone="heavy" />
       </div>
@@ -3305,7 +4460,7 @@ function DayCheckComparisonCards({ dayCheck }) {
           <DayCheckBadge label={dayCheck.sourceDayBadge} tone="good" />
         </div>
         <DayCheckStatusBanner tone="good" icon="check">
-          Smoother route, less backtracking
+          {dayCheck.betterStatusCopy}
         </DayCheckStatusBanner>
         <DayCheckTimeline titles={dayCheck.betterRouteTitles} tone="good" />
         {dayCheck.movedStopTitle ? (
@@ -3473,6 +4628,7 @@ function AllTripBoard({
   dateRangeLabel,
   onModeChange,
   onOpenDay,
+  onCheckDay,
   onScheduleMove,
   onScheduleResize,
   onAddScheduleAt,
@@ -3499,10 +4655,6 @@ function AllTripBoard({
           <p>{totals.blocks} activities • {formatDuration(totals.planned)}</p>
         </div>
         <div className="trip-board-actions">
-          <button className="ghost-button compact-action" type="button" onClick={() => onAddScheduleAt()}>
-            <Plus size={16} />
-            Add activity
-          </button>
           <div className="mode-toggle" aria-label="All Trip display mode">
             <button className={displayMode === "list" ? "is-active" : ""} type="button" onClick={() => onModeChange("list")}>
               List
@@ -3511,15 +4663,23 @@ function AllTripBoard({
               Timeline
             </button>
           </div>
+          <button className="primary-button compact-action desktop-section-action" type="button" onClick={() => onAddScheduleAt()}>
+            <Plus size={16} />
+            Add activity
+          </button>
         </div>
       </div>
+      <button className="mobile-fab-action" type="button" aria-label="Add activity" title="Add activity" onClick={() => onAddScheduleAt()}>
+        <Plus size={22} />
+        <span>Add activity</span>
+      </button>
       {displayMode === "calendar" ? (
-        <TripCalendarBoard
-          days={days}
-          onOpenDay={onOpenDay}
-          onScheduleMove={onScheduleMove}
-          onScheduleResize={onScheduleResize}
-          onAddScheduleAt={onAddScheduleAt}
+          <TripCalendarBoard
+            days={days}
+            onOpenDay={onOpenDay}
+            onScheduleMove={onScheduleMove}
+            onScheduleResize={onScheduleResize}
+            onAddScheduleAt={onAddScheduleAt}
           onEditSchedule={onEditSchedule}
         />
       ) : (
@@ -3529,24 +4689,33 @@ function AllTripBoard({
             const schedule = sortActivitySchedule(day.schedule);
             return (
               <article className={`trip-day-card trip-day-theme-${((day.dayNumber - 1) % 6) + 1}`} key={day.id}>
-                <div className="trip-card-topline">
-                  <button className="trip-day-heading" type="button" onClick={() => onOpenDay(day.id)}>
-                    <span>
-                      <strong>{day.label || `Day ${day.dayNumber}`}</strong>
-                      <small>{formatRailDate(day.date)}</small>
-                    </span>
-                    <span>
-                      <MapPin size={14} />
-                      {day.city}
-                    </span>
-                  </button>
-                  <button className="ghost-button compact-action" type="button" onClick={() => onEditDay(day)}>
-                    Edit
-                  </button>
-                </div>
-                <div className="mini-stats">
-                  <span>{formatDuration(stats.plannedMinutes)} planned</span>
-                  <span>{formatDuration(stats.openMinutes)} open</span>
+                <div className="trip-day-summary">
+                  <div className="trip-card-topline">
+                    <button className="trip-day-heading" type="button" aria-label={`Open ${day.label || `Day ${day.dayNumber}`} itinerary`} onClick={() => onOpenDay(day.id)}>
+                      <span>
+                        <strong>{day.label || `Day ${day.dayNumber}`}</strong>
+                        <small>{formatRailDate(day.date)}</small>
+                      </span>
+                      <span>
+                        <MapPin size={14} aria-hidden="true" />
+                        {day.city}
+                      </span>
+                    </button>
+                    <div className="trip-day-actions">
+                      <button className="ghost-button compact-action" type="button" aria-label={`Edit ${day.label || `Day ${day.dayNumber}`} settings`} onClick={() => onEditDay(day)}>
+                        <Settings size={15} aria-hidden="true" />
+                        Edit
+                      </button>
+                      <button className="trip-check-day-button compact-action" type="button" onClick={() => onCheckDay(day.id)}>
+                        <Route size={15} aria-hidden="true" />
+                        Check day
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mini-stats">
+                    <span>{formatDuration(stats.plannedMinutes)} planned</span>
+                    <span>{formatDuration(stats.openMinutes)} open</span>
+                  </div>
                 </div>
                 <div className="mini-events">
               {schedule.length ? (
@@ -3554,7 +4723,7 @@ function AllTripBoard({
                   <ScheduleEvent key={item.id} item={item} compact onEdit={() => onEditSchedule(day.id, item)} />
                 ))
                   ) : (
-                    <button className="empty-day" type="button" onClick={() => onOpenDay(day.id)}>
+                    <button className="empty-day" type="button" onClick={() => onAddScheduleAt(day.id)}>
                       <Plus size={16} />
                       Plan this day
                     </button>
@@ -3569,20 +4738,100 @@ function AllTripBoard({
   );
 }
 
+function getTripTimelineRowHeight() {
+  if (typeof window === "undefined") {
+    return TRIP_TIME_GRID_ROW_HEIGHT;
+  }
+
+  if (window.matchMedia(PHONE_TIMELINE_QUERY).matches) {
+    return TRIP_TIME_GRID_PHONE_ROW_HEIGHT;
+  }
+
+  if (window.matchMedia(TABLET_TIMELINE_QUERY).matches) {
+    return TRIP_TIME_GRID_TABLET_ROW_HEIGHT;
+  }
+
+  if (window.matchMedia(COMPACT_TIMELINE_QUERY).matches) {
+    return TRIP_TIME_GRID_COMPACT_ROW_HEIGHT;
+  }
+
+  return TRIP_TIME_GRID_ROW_HEIGHT;
+}
+
+function subscribeToMediaQuery(query, listener) {
+  if (query.addEventListener) {
+    query.addEventListener("change", listener);
+    return () => query.removeEventListener("change", listener);
+  }
+
+  query.addListener(listener);
+  return () => query.removeListener(listener);
+}
+
+function getMediaQueryMatches(queryText) {
+  return typeof window !== "undefined" && window.matchMedia(queryText).matches;
+}
+
+function useMediaQueryMatch(queryText) {
+  const [matches, setMatches] = useState(() => getMediaQueryMatches(queryText));
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const query = window.matchMedia(queryText);
+    const updateMatches = () => setMatches(query.matches);
+
+    updateMatches();
+    return subscribeToMediaQuery(query, updateMatches);
+  }, [queryText]);
+
+  return matches;
+}
+
+function useTripTimelineRowHeight() {
+  const [rowHeight, setRowHeight] = useState(getTripTimelineRowHeight);
+
+  useEffect(() => {
+    const compactQuery = window.matchMedia(COMPACT_TIMELINE_QUERY);
+    const tabletQuery = window.matchMedia(TABLET_TIMELINE_QUERY);
+    const phoneQuery = window.matchMedia(PHONE_TIMELINE_QUERY);
+    const updateRowHeight = () => setRowHeight(getTripTimelineRowHeight());
+
+    updateRowHeight();
+    const unsubscribeCompact = subscribeToMediaQuery(compactQuery, updateRowHeight);
+    const unsubscribeTablet = subscribeToMediaQuery(tabletQuery, updateRowHeight);
+    const unsubscribePhone = subscribeToMediaQuery(phoneQuery, updateRowHeight);
+
+    return () => {
+      unsubscribeCompact();
+      unsubscribeTablet();
+      unsubscribePhone();
+    };
+  }, []);
+
+  return rowHeight;
+}
+
 function TripCalendarBoard({ days, onOpenDay, onScheduleMove, onScheduleResize, onAddScheduleAt, onEditSchedule }) {
   const slots = buildTimeGridSlots();
   const stayRailItems = useMemo(() => buildStayRailItems(days), [days]);
   const gridWrapRef = useRef(null);
+  const stickyStackRef = useRef(null);
+  const hasAppliedSmartStartRef = useRef(false);
   const [timelineScrollLeft, setTimelineScrollLeft] = useState(0);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const [addPreview, setAddPreview] = useState(null);
   const addPointerRef = useRef(null);
-  const dragScheduler = useScheduleDrag({ days, onScheduleMove, onScheduleResize, rowHeight: TRIP_TIME_GRID_ROW_HEIGHT });
+  const rowHeight = useTripTimelineRowHeight();
+  const smartStartMinutes = useMemo(() => getTimelineSmartStartMinutes(days), [days]);
+  const dragScheduler = useScheduleDrag({ days, onScheduleMove, onScheduleResize, rowHeight });
   const gridStyle = {
     "--day-count": days.length,
     "--slot-count": slots.length,
-    "--time-row-height": `${TRIP_TIME_GRID_ROW_HEIGHT}px`
+    "--time-row-height": `${rowHeight}px`
   };
 
   useEffect(() => {
@@ -3595,6 +4844,31 @@ function TripCalendarBoard({ days, onOpenDay, onScheduleMove, onScheduleResize, 
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, [days.length]);
+
+  useEffect(() => {
+    if (hasAppliedSmartStartRef.current || smartStartMinutes === null || typeof window === "undefined") {
+      return undefined;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      const grid = gridWrapRef.current;
+      const stickyStack = stickyStackRef.current;
+      if (!grid || !stickyStack) return;
+
+      const topbarHeight = document.querySelector(".topbar")?.getBoundingClientRect().height ?? 0;
+      const stickyStackHeight = stickyStack.getBoundingClientRect().height;
+      const smartStartOffset = ((smartStartMinutes - TIME_GRID_START_MINUTES) / TIME_GRID_STEP_MINUTES) * rowHeight;
+      const targetTop = Math.max(
+        0,
+        window.scrollY + grid.getBoundingClientRect().top + smartStartOffset - topbarHeight - stickyStackHeight
+      );
+
+      hasAppliedSmartStartRef.current = true;
+      window.scrollTo({ top: targetTop, behavior: "auto" });
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [rowHeight, smartStartMinutes]);
 
   function updateTimelineScrollState(node = gridWrapRef.current) {
     if (!node) {
@@ -3628,13 +4902,13 @@ function TripCalendarBoard({ days, onOpenDay, onScheduleMove, onScheduleResize, 
       return null;
     }
 
-    const start = getCellStartFromPointer(event.clientY, event.currentTarget, TRIP_TIME_GRID_ROW_HEIGHT);
+    const start = getCellStartFromPointer(event.clientY, event.currentTarget, rowHeight);
     if (!isScheduleSlotAvailable(day.schedule, null, start, TIME_GRID_STEP_MINUTES)) {
       return null;
     }
 
     return {
-      ...getTimeGridBlockLayout(start, TIME_GRID_STEP_MINUTES, TRIP_TIME_GRID_ROW_HEIGHT),
+      ...getTimeGridBlockLayout(start, TIME_GRID_STEP_MINUTES, rowHeight),
       dayId: day.id,
       start,
       duration: TIME_GRID_STEP_MINUTES,
@@ -3700,41 +4974,44 @@ function TripCalendarBoard({ days, onOpenDay, onScheduleMove, onScheduleResize, 
       onPointerUp={dragScheduler.handlePointerUp}
       onPointerCancel={dragScheduler.handlePointerCancel}
     >
-      <div className="trip-time-sticky-header" style={gridStyle}>
-        <div className="trip-time-corner">Time</div>
-        <div className="trip-time-header-scroll">
-          <div className="trip-time-header-days" style={{ transform: `translateX(-${timelineScrollLeft}px)` }}>
-            {days.map((day) => (
-              <button
-                className={`trip-time-day-header trip-day-theme-${((day.dayNumber - 1) % 6) + 1}`}
-                type="button"
-                key={day.id}
-                onClick={() => onOpenDay(day.id)}
-              >
-                <strong>
-                  {day.label || `Day ${day.dayNumber}`} - {formatWeekday(day.date)}
-                </strong>
-                <span>{formatShortDate(day.date)}</span>
-                <small>
-                  <MapPin size={12} />
-                  {day.city}
-                </small>
-              </button>
-            ))}
+      <div className="trip-time-sticky-stack" ref={stickyStackRef}>
+        <div className="trip-time-navigation" aria-label="Browse trip days">
+          <span>Browse days</span>
+          <div>
+            <button className="trip-time-scroll-button" type="button" aria-label="Scroll to previous days" disabled={!canScrollLeft} onClick={() => scrollTimeline(-1)}>
+              <ChevronLeft size={18} />
+            </button>
+            <button className="trip-time-scroll-button" type="button" aria-label="Scroll to next days" disabled={!canScrollRight} onClick={() => scrollTimeline(1)}>
+              <ChevronRight size={18} />
+            </button>
           </div>
         </div>
-        {canScrollLeft ? (
-          <button className="trip-time-scroll-button trip-time-scroll-button-left" type="button" aria-label="Scroll to previous days" onClick={() => scrollTimeline(-1)}>
-            <ChevronLeft size={20} />
-          </button>
-        ) : null}
-        {canScrollRight ? (
-          <button className="trip-time-scroll-button trip-time-scroll-button-right" type="button" aria-label="Scroll to next days" onClick={() => scrollTimeline(1)}>
-            <ChevronRight size={20} />
-          </button>
-        ) : null}
+        <div className="trip-time-sticky-header" style={gridStyle}>
+          <div className="trip-time-corner">Time</div>
+          <div className="trip-time-header-scroll">
+            <div className="trip-time-header-days" style={{ transform: `translateX(-${timelineScrollLeft}px)` }}>
+              {days.map((day) => (
+                <div
+                  className={`trip-time-day-header trip-day-theme-${((day.dayNumber - 1) % 6) + 1}`}
+                  key={day.id}
+                >
+                  <button className="trip-time-day-header-main" type="button" onClick={() => onOpenDay(day.id)}>
+                    <strong>
+                      {day.label || `Day ${day.dayNumber}`} - {formatWeekday(day.date)}
+                    </strong>
+                    <span>{formatShortDate(day.date)}</span>
+                    <small>
+                      <MapPin size={12} />
+                      {day.city}
+                    </small>
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+        <StayRail days={days} stays={stayRailItems} scrollLeft={timelineScrollLeft} gridStyle={gridStyle} onEditSchedule={onEditSchedule} />
       </div>
-      <StayRail days={days} stays={stayRailItems} scrollLeft={timelineScrollLeft} gridStyle={gridStyle} onEditSchedule={onEditSchedule} />
       <div className="trip-time-grid-wrap" ref={gridWrapRef} onScroll={(event) => updateTimelineScrollState(event.currentTarget)}>
         <div className="trip-time-grid trip-time-body-grid" style={gridStyle}>
           <div className="trip-time-labels">
@@ -3752,6 +5029,7 @@ function TripCalendarBoard({ days, onOpenDay, onScheduleMove, onScheduleResize, 
               draggedItemId={dragScheduler.draggedItemId}
               resizingItemId={dragScheduler.resizingItemId}
               dropPreview={dragScheduler.getDropPreviewForDay(day.id) ?? (addPreview?.dayId === day.id ? addPreview : null)}
+              rowHeight={rowHeight}
               onPointerDown={dragScheduler.handlePointerDown}
               onResizePointerDown={dragScheduler.handleResizePointerDown}
               onAddPointerMove={handleAddPointerMove}
@@ -3823,6 +5101,7 @@ function TripTimeDayColumn({
   draggedItemId,
   resizingItemId,
   dropPreview,
+  rowHeight,
   onPointerDown,
   onResizePointerDown,
   onAddPointerMove,
@@ -3849,12 +5128,12 @@ function TripTimeDayColumn({
       {schedule.map((item) => {
         const config = getCategoryConfigForAssets(item.category, tagAssets);
         const Icon = config.icon;
-        const layout = getTimeGridEventLayout(item, TRIP_TIME_GRID_ROW_HEIGHT);
+        const layout = getTimeGridEventLayout(item, rowHeight);
         const detail = getTripTimeEventDetail(item, day.city, tagAssets);
 
         return (
           <article
-            className={`trip-time-event category-${config.className} ${layout.isClamped ? "is-clamped" : ""} ${draggedItemId === item.id ? "is-dragging" : ""} ${
+            className={`trip-time-event category-${config.className} ${Number(item.duration) >= 60 ? "has-readable-title" : ""} ${layout.isClamped ? "is-clamped" : ""} ${draggedItemId === item.id ? "is-dragging" : ""} ${
               resizingItemId === item.id ? "is-resizing" : ""
             }`}
             role="button"
@@ -3923,338 +5202,972 @@ function TripTimeDayColumn({
   );
 }
 
-function IdeasSection({
-  ideas,
-  allIdeas,
-  hidden = false,
-  travelers,
-  currentTravelerName,
-  ideaTab,
-  categoryFilter,
-  onTabChange,
-  onCategoryChange,
-  onAddIdea,
-  onEditIdea,
-  onDeleteIdea,
-  onVote,
-  onPromote
-}) {
-  return (
-    <section className="ideas-section" aria-label="Ideas and proposals" hidden={hidden}>
-      <div className="ideas-section-header">
-        <div>
-          <h1>Ideas</h1>
-          <p>{allIdeas.length} saved</p>
-        </div>
-      </div>
 
-      <div className="ideas-workspace">
-        <div className="ideas-browser">
-          <div className="ideas-tabs">
-            <div className="ideas-tab-list" role="tablist" aria-label="Idea views">
-              {FILTER_TABS.map((tab) => (
-                <button className={ideaTab === tab ? "is-active" : ""} type="button" role="tab" aria-selected={ideaTab === tab} key={tab} onClick={() => onTabChange(tab)}>
-                  {tab}
-                  {tab === "Booked" ? <span className="idea-tab-count is-booked">{countStatus(allIdeas, "Booked")}</span> : null}
-                  {tab === "Maybe" ? <span className="idea-tab-count is-maybe">{countStatus(allIdeas, "Maybe")}</span> : null}
-                </button>
-              ))}
-            </div>
-            <button className="primary-button ideas-add-button" type="button" onClick={onAddIdea}>
-              <Plus size={17} />
-              Add idea
-            </button>
-          </div>
+function MapSection({ trip, tripId, days, selectedDay, mapsProfile, tagAssets, mapOverview, onAddIdea, onAddActivity, onOpenDay, onPromoteIdea, onEditItem }) {
+  const [filters, setFilters] = useState(MAP_DEFAULT_FILTERS);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
+  const [selectedItemId, setSelectedItemId] = useState("");
+  const [isRouteMode, setIsRouteMode] = useState(false);
+  const [isMobileMapSearchOpen, setIsMobileMapSearchOpen] = useState(false);
+  const [routeSelectedItemIds, setRouteSelectedItemIds] = useState([]);
+  const [routeTravelMode, setRouteTravelMode] = useState("WALK");
+  const [routePreviewState, setRoutePreviewState] = useState({ status: "idle", data: null, error: "" });
+  const [mapLoadError, setMapLoadError] = useState("");
+  const [outsideResultCount, setOutsideResultCount] = useState(0);
+  const [focusResultsRequest, setFocusResultsRequest] = useState(0);
+  const mobileMapSearchInputRef = useRef(null);
+  const isPhoneMapView = useMediaQueryMatch(PHONE_TIMELINE_QUERY);
+  const [remoteMapConfig, setRemoteMapConfig] = useState({
+    status: GOOGLE_MAPS_BROWSER_KEY ? "ready" : "idle",
+    apiKey: GOOGLE_MAPS_BROWSER_KEY,
+    mapId: GOOGLE_MAPS_MAP_ID,
+    message: ""
+  });
 
-          <IdeaFilters activeCategory={categoryFilter} onChange={onCategoryChange} />
-
-          <div className="idea-list">
-            {ideas.map((idea) => (
-              <IdeaRow
-                idea={idea}
-                key={idea.id}
-                travelers={travelers}
-                currentTravelerName={currentTravelerName}
-                onEdit={() => onEditIdea(idea)}
-                onDelete={() => onDeleteIdea(idea.id)}
-                onVote={(traveler) => onVote(idea.id, traveler)}
-                onPromote={() => onPromote(idea)}
-              />
-            ))}
-          </div>
-        </div>
-      </div>
-    </section>
+  const filteredMap = useMemo(() => filterPlannerMapItems(mapOverview, filters, searchQuery), [mapOverview, filters, searchQuery]);
+  const initialMapItems = useMemo(
+    () => selectInitialMapCluster(mapOverview.mappedItems, selectedDay),
+    [mapOverview.mappedItems, selectedDay]
   );
-}
-
-function ExpensesSection({
-  hidden = false,
-  trip,
-  status,
-  expenses,
-  suggestions,
-  summary,
-  travelers,
-  currentTravelerClientId,
-  onAddExpense,
-  onTrackSuggestion,
-  onEditExpense,
-  onDeleteExpense
-}) {
-  const [activeExpenseTab, setActiveExpenseTab] = useState("budget");
-  const [budgetCategoryFilter, setBudgetCategoryFilter] = useState("All");
-  const [budgetCurrencySettings, setBudgetCurrencySettings] = useState(() => readBudgetCurrencySettings());
-  const travelerNameByClientId = useMemo(
-    () => new Map(travelers.map((traveler) => [traveler.clientId, traveler.name])),
-    [travelers]
-  );
-  const expenseSourceLookup = useMemo(() => buildExpenseSourceLookup(trip), [trip]);
-  const budgetRows = useMemo(
-    () => buildBudgetRows({ expenses, suggestions, sourceLookup: expenseSourceLookup }),
-    [expenses, suggestions, expenseSourceLookup]
-  );
-  const budgetFilters = useMemo(() => buildBudgetFilters(budgetRows), [budgetRows]);
-  const filteredBudgetRows = useMemo(
-    () => budgetRows.filter((row) => budgetCategoryFilter === "All" || row.filterValue === budgetCategoryFilter),
-    [budgetRows, budgetCategoryFilter]
-  );
-  const budgetJpyPerUsd = normalizeExchangeRate(budgetCurrencySettings.jpyPerUsd);
-  const budgetCurrencyView = budgetCurrencySettings.view;
-  const budgetTotalLabel = useMemo(
-    () => formatBudgetTotal(budgetRows, budgetCurrencyView, budgetJpyPerUsd),
-    [budgetRows, budgetCurrencyView, budgetJpyPerUsd]
-  );
-  const budgetDisplayRows = useMemo(
-    () => filteredBudgetRows.map((row) => formatBudgetDisplayRow(row, budgetCurrencyView, budgetJpyPerUsd)),
-    [filteredBudgetRows, budgetCurrencyView, budgetJpyPerUsd]
-  );
-  const primaryCurrency = summary.primaryCurrency;
-  const currentBalance = currentTravelerClientId ? primaryCurrency.balancesByTraveler[currentTravelerClientId] ?? 0 : 0;
+  const visibleItemIds = useMemo(() => new Set(filteredMap.allItems.map((item) => item.id)), [filteredMap.allItems]);
+  const selectedItem = filteredMap.mappedItems.find((item) => item.id === selectedItemId) ?? null;
+  const routeSelectableItems = useMemo(() => new Map(filteredMap.mappedItems.map((item) => [item.id, item])), [filteredMap.mappedItems]);
+  const routeSelectedItems = useMemo(() => routeSelectedItemIds.map((itemId) => routeSelectableItems.get(itemId)).filter(Boolean), [routeSelectedItemIds, routeSelectableItems]);
+  const cityOptions = useMemo(() => buildMapCityOptions(mapOverview.allItems), [mapOverview.allItems]);
+  const dayOptions = useMemo(() => days.map((day) => ({ value: day.id, label: formatMapDayLabel(day) })), [days]);
+  const activeFilterChips = useMemo(() => buildActiveMapFilterChips(filters, { dayOptions, cityOptions }), [filters, dayOptions, cityOptions]);
+  const activeFilterCount = activeFilterChips.length;
+  const hasActiveMapQuery = activeFilterCount > 0 || Boolean(searchQuery.trim());
+  const fallbackCenter = getMapFallbackCenter(mapsProfile);
+  const mapApiKey = GOOGLE_MAPS_BROWSER_KEY || remoteMapConfig.apiKey;
+  const mapId = GOOGLE_MAPS_MAP_ID || remoteMapConfig.mapId || "DEMO_MAP_ID";
+  const mapSetupMessage = getMapSetupMessage(remoteMapConfig);
+  const selectedPlacePreview = usePlacePreview(selectedItem?.place?.id, selectedItem ? 520 : 0);
+  const handleOutsideResultsChange = useCallback((count) => {
+    setOutsideResultCount(hasActiveMapQuery ? count : 0);
+  }, [hasActiveMapQuery]);
 
   useEffect(() => {
-    if (!budgetFilters.includes(budgetCategoryFilter)) {
-      setBudgetCategoryFilter("All");
+    if (GOOGLE_MAPS_BROWSER_KEY) {
+      return;
     }
-  }, [budgetFilters, budgetCategoryFilter]);
 
-  function updateBudgetCurrencySettings(nextSettings) {
-    const nextValue = { ...budgetCurrencySettings, ...nextSettings };
-    setBudgetCurrencySettings(nextValue);
-    writeBudgetCurrencySettings(nextValue);
+    let isCurrent = true;
+    setRemoteMapConfig((current) => ({ ...current, status: "loading", message: "" }));
+    loadMapsConfigCached()
+      .then((config) => {
+        if (!isCurrent) {
+          return;
+        }
+        setRemoteMapConfig({
+          status: "ready",
+          apiKey: config.apiKey ?? "",
+          mapId: config.mapId ?? GOOGLE_MAPS_MAP_ID,
+          message: ""
+        });
+      })
+      .catch((error) => {
+        if (!isCurrent) {
+          return;
+        }
+        setRemoteMapConfig({
+          status: "error",
+          apiKey: "",
+          mapId: GOOGLE_MAPS_MAP_ID,
+          message: error.message
+        });
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (selectedItemId && !visibleItemIds.has(selectedItemId)) {
+      setSelectedItemId("");
+    }
+  }, [selectedItemId, visibleItemIds]);
+
+  useEffect(() => {
+    if (!hasActiveMapQuery || filteredMap.mappedItems.length === 0) {
+      setOutsideResultCount(0);
+    }
+  }, [filteredMap.mappedItems.length, hasActiveMapQuery]);
+
+  useEffect(() => {
+    if (!isMobileMapSearchOpen || typeof window === "undefined") {
+      return undefined;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      mobileMapSearchInputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [isMobileMapSearchOpen]);
+
+  useEffect(() => {
+    setRouteSelectedItemIds((current) => {
+      const next = current.filter((itemId) => routeSelectableItems.has(itemId));
+      if (next.length !== current.length) {
+        setRoutePreviewState({ status: "idle", data: null, error: "" });
+      }
+      return next;
+    });
+  }, [routeSelectableItems]);
+
+  useEffect(() => {
+    if (!mapApiKey || typeof window === "undefined") {
+      return undefined;
+    }
+
+    const previousAuthFailure = window.gm_authFailure;
+    const handleAuthFailure = () => {
+      setMapLoadError("Google rejected this browser map key. Check that GOOGLE_MAPS_BROWSER_KEY allows Maps JavaScript API and the neoncartridgelabs.com referrer.");
+      if (typeof previousAuthFailure === "function") {
+        previousAuthFailure();
+      }
+    };
+
+    window.gm_authFailure = handleAuthFailure;
+
+    return () => {
+      if (window.gm_authFailure === handleAuthFailure) {
+        window.gm_authFailure = previousAuthFailure;
+      }
+    };
+  }, [mapApiKey]);
+
+  function applyFilters(nextFilters) {
+    setOutsideResultCount(0);
+    setFilters(nextFilters);
+    setIsFilterSheetOpen(false);
   }
 
+  function resetFilters() {
+    setOutsideResultCount(0);
+    setFilters(MAP_DEFAULT_FILTERS);
+  }
+
+  function clearMapView() {
+    setOutsideResultCount(0);
+    setSearchQuery("");
+    setFilters(MAP_DEFAULT_FILTERS);
+  }
+
+  function reviewMissingLocations() {
+    setOutsideResultCount(0);
+    setSearchQuery("");
+    setFilters({ ...MAP_DEFAULT_FILTERS, location: "Needs location" });
+  }
+
+  function handleMapSearchChange(value) {
+    setOutsideResultCount(0);
+    setSearchQuery(value);
+  }
+
+  function toggleRouteMode() {
+    setIsRouteMode((current) => {
+      const next = !current;
+      if (next) {
+        setSelectedItemId("");
+      } else {
+        clearRoutePreview();
+      }
+      return next;
+    });
+  }
+
+  function clearRoutePreview() {
+    setRouteSelectedItemIds([]);
+    setRoutePreviewState({ status: "idle", data: null, error: "" });
+  }
+
+  function clearMapSearch(event) {
+    setOutsideResultCount(0);
+    setSearchQuery("");
+    event.currentTarget.closest("label")?.querySelector("input")?.blur();
+  }
+
+  function handleMapMarkerSelect(itemId) {
+    if (!isRouteMode) {
+      setIsMobileMapSearchOpen(false);
+      setSelectedItemId(itemId);
+      return;
+    }
+
+    setSelectedItemId("");
+    setRoutePreviewState({ status: "idle", data: null, error: "" });
+    setRouteSelectedItemIds((current) => (
+      current.includes(itemId)
+        ? current.filter((selectedItemId) => selectedItemId !== itemId)
+        : [...current, itemId]
+    ));
+  }
+
+  async function handleRoutePreview() {
+    if (routeSelectedItems.length < 2 || routePreviewState.status === "loading") {
+      return;
+    }
+
+    setRoutePreviewState({ status: "loading", data: null, error: "" });
+    try {
+      const result = await previewRouteCached({
+        travelMode: routeTravelMode,
+        countryName: mapsProfile.countryName,
+        stops: routeSelectedItems.map((item) => ({
+          id: item.id,
+          title: item.title,
+          latitude: item.position.lat,
+          longitude: item.position.lng
+        }))
+      });
+      setRoutePreviewState({ status: "success", data: result, error: "" });
+    } catch (error) {
+      setRoutePreviewState({ status: "error", data: null, error: error.message || "Could not preview this route." });
+    }
+  }
+
+  const showNeedsLocation = filters.location !== "Mapped";
+  const showMap = filters.location !== "Needs location";
+  const showRoutePanel = isRouteMode;
+  const emptyState = getMapEmptyState({
+    plannerItemCount: mapOverview.allItems.length,
+    mappedItemCount: mapOverview.mappedItems.length,
+    needsLocationCount: mapOverview.needsLocationItems.length,
+    hasActiveQuery: Boolean(searchQuery.trim()) || activeFilterChips.some((chip) => chip.key !== "location"),
+    locationFilter: filters.location
+  });
+  const emptyStateActions = {
+    "add-idea": { label: "Add idea", icon: Plus, onClick: onAddIdea },
+    "add-activity": { label: "Add activity", icon: CalendarDays, onClick: onAddActivity },
+    "clear-view": { label: "Clear filters and search", icon: RefreshCcw, onClick: clearMapView },
+    "review-missing": { label: "Review missing locations", icon: MapPin, onClick: reviewMissingLocations },
+    "show-mapped": { label: "Show mapped places", icon: MapPin, onClick: clearMapView }
+  };
+
   return (
-    <section className="expenses-section" aria-label="Trip expenses" hidden={hidden}>
-      <div className="ideas-section-header expenses-section-header">
-        <div>
-          <h1>Expenses</h1>
-          <p>{budgetRows.length} budget items · {expenses.length} split expenses</p>
+    <section className="map-section" aria-label="Trip map">
+      <div className="map-section-header">
+        <div className="map-section-copy">
+          <h1>Map</h1>
+          <p>{mapOverview.mappedItems.length} mapped places</p>
         </div>
-        <button className="primary-button" type="button" onClick={onAddExpense}>
-          <Plus size={17} />
-          Add expense
-        </button>
+        <span className={`map-location-status${mapOverview.needsLocationItems.length ? " has-missing" : ""}`}>
+          {mapOverview.needsLocationItems.length ? `${mapOverview.needsLocationItems.length} need location` : "All mapped"}
+        </span>
+        <label className="map-search-field">
+          <span>
+            <Search size={15} />
+            <span className="sr-only">Search map</span>
+          </span>
+          <input type="search" value={searchQuery} placeholder="Search places or cities" onChange={(event) => handleMapSearchChange(event.target.value)} />
+          <button className="map-search-clear" type="button" aria-label="Cancel map search" onMouseDown={(event) => event.preventDefault()} onClick={clearMapSearch}>
+            <X size={16} />
+          </button>
+        </label>
       </div>
 
-      <div className="expenses-workspace">
-        <div className="expense-toolbar">
-          <div className="expense-view-tabs" role="tablist" aria-label="Expense views">
-            <button className={activeExpenseTab === "budget" ? "is-active" : ""} type="button" role="tab" aria-selected={activeExpenseTab === "budget"} onClick={() => setActiveExpenseTab("budget")}>
-              Trip budget
-            </button>
-            <button className={activeExpenseTab === "split" ? "is-active" : ""} type="button" role="tab" aria-selected={activeExpenseTab === "split"} onClick={() => setActiveExpenseTab("split")}>
-              Split
-            </button>
-          </div>
+      <MapFilterToolbar
+        activeFilterChips={activeFilterChips}
+        activeFilterCount={activeFilterCount}
+        isRouteMode={isRouteMode}
+        onOpenFilters={() => setIsFilterSheetOpen(true)}
+        onReset={resetFilters}
+        onToggleRouteMode={toggleRouteMode}
+      />
 
-          {activeExpenseTab === "budget" ? (
-            <div className="expense-budget-currency-bar" aria-label="Budget currency display">
-              <div className="expense-currency-toggle" role="group" aria-label="Show budget as">
-                {BUDGET_CURRENCY_VIEWS.map((option) => (
-                  <button
-                    className={budgetCurrencyView === option.value ? "is-active" : ""}
-                    type="button"
-                    key={option.value}
-                    onClick={() => updateBudgetCurrencySettings({ view: option.value })}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-              {budgetCurrencyView !== "native" ? (
-                <label className="expense-rate-field">
-                  <span>Rate</span>
-                  <input
-                    type="number"
-                    min="1"
-                    step="1"
-                    value={budgetCurrencySettings.jpyPerUsd}
-                    onChange={(event) => updateBudgetCurrencySettings({ jpyPerUsd: event.target.value })}
+      <div className={`map-workspace${!showNeedsLocation && !showRoutePanel ? " is-map-only" : ""}`}>
+        <div className="map-canvas-panel">
+          {showMap ? (
+            mapApiKey && !mapLoadError ? (
+              filteredMap.mappedItems.length ? (
+                <React.Suspense fallback={<MapPlaceholder title="Loading map" detail="Preparing your trip places." />}>
+                  <LazyPlannerGoogleMap
+                    apiKey={mapApiKey}
+                    mapId={mapId}
+                    items={filteredMap.mappedItems}
+                    initialItems={initialMapItems}
+                    selectedItemId={isRouteMode ? "" : selectedItemId}
+                    routeSelectedItemIds={routeSelectedItemIds}
+                    fallbackCenter={fallbackCenter}
+                    storageKey={mapCameraStorageKey(tripId)}
+                    focusRequest={focusResultsRequest}
+                    isPhoneView={isPhoneMapView}
+                    onOutsideResultsChange={handleOutsideResultsChange}
+                    onSelectItem={handleMapMarkerSelect}
+                    onMapError={(error) => setMapLoadError(formatGoogleMapsApiError(error))}
                   />
-                  <span>JPY / USD</span>
-                </label>
+                </React.Suspense>
               ) : (
-                <span className="expense-currency-note">Original currencies</span>
-              )}
+                <MapPlaceholder
+                  title={emptyState.title}
+                  detail={emptyState.detail}
+                  primaryAction={emptyStateActions[emptyState.primaryAction]}
+                  secondaryAction={emptyStateActions[emptyState.secondaryAction]}
+                />
+              )
+            ) : (
+              <MapPlaceholder title={mapLoadError ? "Maps JavaScript key blocked" : mapSetupMessage.title} detail={mapLoadError || mapSetupMessage.detail} />
+            )
+          ) : (
+            <MapPlaceholder
+              title={emptyState.title}
+              detail={emptyState.detail}
+              primaryAction={emptyStateActions[emptyState.primaryAction]}
+            />
+          )}
+
+          <MapMobileControls
+            activeFilterCount={activeFilterCount}
+            hasSelectedItem={Boolean(selectedItem && !isRouteMode)}
+            isRouteMode={isRouteMode}
+            isSearchOpen={isMobileMapSearchOpen}
+            missingLocationCount={mapOverview.needsLocationItems.length}
+            searchInputRef={mobileMapSearchInputRef}
+            searchQuery={searchQuery}
+            onCloseSearch={() => setIsMobileMapSearchOpen(false)}
+            onOpenFilters={() => setIsFilterSheetOpen(true)}
+            onOpenSearch={() => setIsMobileMapSearchOpen(true)}
+            onSearchChange={handleMapSearchChange}
+            onToggleRouteMode={toggleRouteMode}
+          />
+
+          {outsideResultCount > 0 && !selectedItem && !isRouteMode ? (
+            <div className="map-outside-results" role="status">
+              <span>{outsideResultCount} matching {outsideResultCount === 1 ? "place" : "places"} outside this area</span>
+              <button type="button" onClick={() => {
+                setOutsideResultCount(0);
+                setFocusResultsRequest((value) => value + 1);
+              }}>Show results</button>
             </div>
+          ) : null}
+
+          {selectedItem && !isRouteMode ? (
+            <MapDetailCard
+              item={selectedItem}
+              previewState={selectedPlacePreview}
+              onClose={() => setSelectedItemId("")}
+              onEdit={() => onEditItem(selectedItem)}
+              onOpenDay={() => selectedItem.dayId ? onOpenDay(selectedItem.dayId) : null}
+              onPromoteIdea={() => selectedItem.source === "idea" ? onPromoteIdea(selectedItem.sourceItem) : null}
+            />
           ) : null}
         </div>
 
-        {activeExpenseTab === "budget" ? (
-          <section className="expense-panel expense-budget-panel" aria-label="Trip budget" role="tabpanel">
-            <div className="expense-budget-hero">
+        {showRoutePanel ? (
+          <MapRoutePanel
+            selectedItems={routeSelectedItems}
+            travelMode={routeTravelMode}
+            previewState={routePreviewState}
+            onTravelModeChange={(nextTravelMode) => {
+              setRouteTravelMode(nextTravelMode);
+              setRoutePreviewState({ status: "idle", data: null, error: "" });
+            }}
+            onPreview={handleRoutePreview}
+            onCancel={() => {
+              setIsRouteMode(false);
+              clearRoutePreview();
+            }}
+            onRemoveItem={(itemId) => {
+              setRouteSelectedItemIds((current) => current.filter((selectedItemId) => selectedItemId !== itemId));
+              setRoutePreviewState({ status: "idle", data: null, error: "" });
+            }}
+          />
+        ) : showNeedsLocation ? (
+          <aside className="map-side-panel" aria-label="Items that need locations">
+            <div className="map-panel-heading">
               <div>
-                <span>Trip budget</span>
-                <h2>Estimated total</h2>
-                <p>Tracked expenses plus planned trip costs. Treat this as a working estimate.</p>
+                <strong>Needs location</strong>
+                <small>{filteredMap.needsLocationItems.length} items</small>
               </div>
-              <div className="expense-budget-total">
-                <strong>{budgetTotalLabel}</strong>
-                <span>{budgetRows.length} budget items</span>
+              <MapPin size={18} />
+            </div>
+            {filteredMap.needsLocationItems.length ? (
+              <div className="map-location-list">
+                {filteredMap.needsLocationItems.map((item) => (
+                  <MapLocationRow item={item} key={item.id} onEdit={() => onEditItem(item)} />
+                ))}
               </div>
-            </div>
-            <ExpenseBudgetFilters filters={budgetFilters} activeFilter={budgetCategoryFilter} onChange={setBudgetCategoryFilter} />
-            <div className="expense-budget-list">
-              {budgetDisplayRows.map((row) => (
-                <BudgetExpenseRow
-                  row={row}
-                  key={row.id}
-                  onTrack={row.suggestion ? () => onTrackSuggestion(row.suggestion) : null}
-                />
-              ))}
-              {!budgetRows.length ? <p className="expense-empty">Add costs to activities, ideas, hotels, flights, or manual expenses to build a trip estimate.</p> : null}
-              {budgetRows.length && !filteredBudgetRows.length ? <p className="expense-empty">No budget items match this filter.</p> : null}
-            </div>
-          </section>
-        ) : (
-          <>
-            <div className="expense-summary-grid expense-split-summary" role="tabpanel" aria-label="Split summary">
-              <ExpenseMetric label="Tracked total" value={formatMoneyList(summary.currencies)} />
-              <ExpenseMetric label="Split expenses" value={`${expenses.length}`} detail={status === "saving" ? "Saving..." : status === "loading" ? "Loading..." : "Synced"} />
-              <ExpenseMetric label="My balance" value={currentTravelerClientId ? formatSignedMoney(currentBalance, primaryCurrency.currency) : "Choose traveler"} detail="Positive means you are owed" />
-            </div>
-
-            <div className="expenses-columns expense-split-columns">
-              <section className="expense-panel" aria-label="Tracked split expenses">
-                <div className="expense-panel-heading">
-                  <div>
-                    <h2>Split expenses</h2>
-                    <p>Real amounts used for paid/owed calculations.</p>
-                  </div>
-                </div>
-                <div className="tracked-expense-list">
-                  {expenses.map((expense) => (
-                    <ExpenseRow
-                      expense={expense}
-                      key={expense.clientId}
-                      travelerNameByClientId={travelerNameByClientId}
-                      onEdit={() => onEditExpense(expense)}
-                      onDelete={() => onDeleteExpense(expense.clientId)}
-                    />
-                  ))}
-                  {!expenses.length ? <p className="expense-empty">Add a split expense or track a budget item to start settlement math.</p> : null}
-                </div>
-              </section>
-
-              <section className="expense-panel settlement-panel" aria-label="Settlement recommendations">
-                <div className="expense-panel-heading">
-                  <div>
-                    <h2>Who pays who</h2>
-                    <p>Optimized equal-split settlement.</p>
-                  </div>
-                </div>
-                <div className="settlement-list">
-                  {summary.currencies.flatMap((currencySummary) =>
-                    currencySummary.settlements.map((settlement) => (
-                      <div className="settlement-row" key={`${settlement.currency}-${settlement.fromTravelerClientId}-${settlement.toTravelerClientId}-${settlement.amountMinor}`}>
-                        <span>{settlement.fromName}</span>
-                        <ArrowRight size={16} />
-                        <span>{settlement.toName}</span>
-                        <strong>{formatMoney(settlement.amountMinor, settlement.currency)}</strong>
-                      </div>
-                    ))
-                  )}
-                  {expenses.length && !summary.currencies.some((currencySummary) => currencySummary.settlements.length) ? (
-                    <p className="expense-empty">Everyone is even.</p>
-                  ) : null}
-                  {!expenses.length ? <p className="expense-empty">No settlement needed yet.</p> : null}
-                </div>
-              </section>
-            </div>
-          </>
-        )}
+            ) : (
+              <div className="map-panel-empty">
+                <CheckCircle2 size={19} />
+                <span>Everything in this view has a location.</span>
+              </div>
+            )}
+          </aside>
+        ) : null}
       </div>
+
+      {isFilterSheetOpen ? (
+        <MapFilterSheet
+          filters={filters}
+          dayOptions={dayOptions}
+          cityOptions={cityOptions}
+          onApply={applyFilters}
+          onCancel={() => setIsFilterSheetOpen(false)}
+        />
+      ) : null}
     </section>
   );
 }
 
-function ExpenseBudgetFilters({ filters, activeFilter, onChange }) {
-  const tagAssets = useTagAssets();
+function MapMobileControls({
+  activeFilterCount,
+  hasSelectedItem,
+  isRouteMode,
+  isSearchOpen,
+  missingLocationCount,
+  searchInputRef,
+  searchQuery,
+  onCloseSearch,
+  onOpenFilters,
+  onOpenSearch,
+  onSearchChange,
+  onToggleRouteMode
+}) {
+  return (
+    <div className={`map-mobile-controls${isSearchOpen ? " is-search-open" : ""}${hasSelectedItem ? " has-selected-card" : ""}${missingLocationCount > 0 ? " has-missing-location" : ""}`} aria-label="Mobile map controls">
+      {isSearchOpen ? (
+        <label className="map-mobile-search-field">
+          <Search size={17} />
+          <span className="sr-only">Search map</span>
+          <input
+            ref={searchInputRef}
+            type="search"
+            value={searchQuery}
+            placeholder="Search places or cities"
+            onChange={(event) => onSearchChange(event.target.value)}
+          />
+          <button className="map-mobile-search-close" type="button" aria-label="Close map search" onClick={onCloseSearch}>
+            <X size={18} />
+          </button>
+        </label>
+      ) : (
+        <div className="map-mobile-control-rail">
+          <div className="map-mobile-control-group">
+            <button className="map-mobile-control-button" type="button" aria-label="Open map filters" onClick={onOpenFilters}>
+              <Filter size={18} />
+              {activeFilterCount ? <span aria-label={`${activeFilterCount} active filters`}>{activeFilterCount}</span> : null}
+            </button>
+            <button className={`map-mobile-control-button${isRouteMode ? " is-active" : ""}`} type="button" aria-label={isRouteMode ? "Exit route mode" : "Open route mode"} aria-pressed={isRouteMode} onClick={onToggleRouteMode}>
+              <Route size={18} />
+            </button>
+          </div>
+          <button className="map-mobile-control-button" type="button" aria-label="Search map" onClick={onOpenSearch}>
+            <Search size={18} />
+          </button>
+        </div>
+      )}
 
-  if (filters.length <= 1) {
-    return null;
+      {missingLocationCount > 0 && !isSearchOpen ? (
+        <span className="map-mobile-status-pill">{missingLocationCount} need location</span>
+      ) : null}
+    </div>
+  );
+}
+
+function usePlacePreview(placeId, maxWidthPx) {
+  const [previewState, setPreviewState] = useState({ status: "idle", data: null, error: "" });
+
+  useEffect(() => {
+    const normalizedPlaceId = String(placeId ?? "").trim();
+    if (!normalizedPlaceId) {
+      setPreviewState({ status: "idle", data: null, error: "" });
+      return undefined;
+    }
+
+    let isCurrent = true;
+    setPreviewState({ status: "loading", data: null, error: "" });
+
+    loadPlacePreviewCached({ placeId: normalizedPlaceId, maxWidthPx })
+      .then((data) => {
+        if (!isCurrent) {
+          return;
+        }
+        setPreviewState({ status: "ready", data, error: "" });
+      })
+      .catch((error) => {
+        if (!isCurrent) {
+          return;
+        }
+        setPreviewState({ status: "error", data: null, error: error.message || "Could not load this place preview." });
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [placeId, maxWidthPx]);
+
+  return previewState;
+}
+
+function MapFilterToolbar({ activeFilterChips, activeFilterCount, isRouteMode = false, onOpenFilters, onReset, onToggleRouteMode }) {
+  return (
+    <div className="map-filter-toolbar" aria-label="Map filter controls">
+      <button className="ghost-button map-filter-trigger" type="button" onClick={onOpenFilters} aria-haspopup="dialog">
+        <Filter size={16} />
+        Filters
+        {activeFilterCount ? <span aria-label={`${activeFilterCount} active filters`}>{activeFilterCount}</span> : null}
+      </button>
+      <button className={`ghost-button map-route-trigger${isRouteMode ? " is-active" : ""}`} type="button" onClick={onToggleRouteMode} aria-pressed={isRouteMode}>
+        <Route size={16} />
+        Route
+      </button>
+      <div className="map-active-filter-chips" aria-label="Active map filters">
+        {activeFilterChips.length ? (
+          activeFilterChips.map((chip) => (
+            <span className="map-active-filter-chip" key={chip.key}>{chip.label}</span>
+          ))
+        ) : (
+          <span className="map-active-filter-chip is-default">Default view</span>
+        )}
+        {activeFilterChips.length ? (
+          <button className="map-active-filter-chip is-reset" type="button" onClick={onReset}>
+            Reset
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function MapRoutePanel({ selectedItems, travelMode, previewState, onTravelModeChange, onPreview, onCancel, onRemoveItem }) {
+  const canPreview = selectedItems.length >= 2 && previewState.status !== "loading";
+  const result = previewState.data;
+
+  return (
+    <aside className="map-side-panel map-route-panel" aria-label="Route preview">
+      <div className="map-panel-heading">
+        <div>
+          <strong>Route preview</strong>
+          <small>{selectedItems.length} selected</small>
+        </div>
+        <Route size={18} />
+      </div>
+
+      <div className="map-route-panel-body">
+        <fieldset className="map-route-mode-group">
+          <legend>Travel mode</legend>
+          <div className="map-filter-segmented">
+            {["WALK", "DRIVE", "TRANSIT"].map((mode) => (
+              <button className={travelMode === mode ? "is-active" : ""} type="button" key={mode} aria-pressed={travelMode === mode} onClick={() => onTravelModeChange(mode)}>
+                {formatRouteTravelMode(mode)}
+              </button>
+            ))}
+          </div>
+        </fieldset>
+
+        <div className="map-route-selected">
+          <div className="map-route-section-title">
+            <strong>Selected stops</strong>
+            <span>Tap markers to add or remove</span>
+          </div>
+          {selectedItems.length ? (
+            <ol className="map-route-stop-list">
+              {selectedItems.map((item, index) => (
+                <li key={item.id}>
+                  <span>{index + 1}</span>
+                  <div>
+                    <strong>{item.title}</strong>
+                    <small>{item.category}{item.city ? ` · ${item.city}` : ""}</small>
+                  </div>
+                  <button className="icon-button flat" type="button" aria-label={`Remove ${item.title}`} onClick={() => onRemoveItem(item.id)}>
+                    <X size={15} />
+                  </button>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="map-route-empty">Select at least two mapped markers to preview travel time.</p>
+          )}
+        </div>
+
+        <div className="map-route-actions">
+          <button className="ghost-button" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="primary-button" type="button" disabled={!canPreview} onClick={onPreview}>
+            {previewState.status === "loading" ? "Previewing..." : "Preview route"}
+          </button>
+        </div>
+
+        {previewState.status === "error" ? (
+          <div className="map-route-warning">
+            <Info size={16} />
+            <span>{previewState.error}</span>
+          </div>
+        ) : null}
+
+        {result ? (
+          <div className="map-route-result">
+            <div className="map-route-result-summary">
+              <span>{formatRouteTravelMode(result.travelMode)} route</span>
+              <strong>{result.totalTravelMinutes == null ? "Time unavailable" : `About ${formatDuration(result.totalTravelMinutes)} total`}</strong>
+            </div>
+            <ol className="map-route-leg-list">
+              {(result.legs ?? []).map((leg) => (
+                <li key={`${leg.originStopId}:${leg.destinationStopId}`}>
+                  <div>
+                    <strong>To {leg.destinationTitle}</strong>
+                    <small>{[leg.durationMinutes == null ? "" : `About ${formatDuration(leg.durationMinutes)}`, formatRouteDistance(leg.distanceMeters), formatRouteFare(leg.fareYen)].filter(Boolean).join(" · ")}</small>
+                    <RouteModeChips modes={leg.modes} fallbackMode={result.travelMode} label={leg.summary} />
+                  </div>
+                  <span>{leg.durationMinutes == null ? "n/a" : formatDuration(leg.durationMinutes)}</span>
+                </li>
+              ))}
+            </ol>
+            {result.warnings?.length ? (
+              <div className="map-route-note">
+                <Info size={16} />
+                <span>{humanizeRouteNote(result.warnings[0])}</span>
+              </div>
+            ) : null}
+            {result.googleMapsUrl ? (
+              <a className="primary-button compact-action" href={result.googleMapsUrl} target="_blank" rel="noreferrer">
+                <ExternalLink size={15} />
+                Open live route
+              </a>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </aside>
+  );
+}
+
+function MapFilterSheet({ filters, dayOptions, cityOptions, onApply, onCancel }) {
+  const [draftFilters, setDraftFilters] = useState(filters);
+  const draftActiveFilterCount = buildActiveMapFilterChips(draftFilters, { dayOptions, cityOptions }).length;
+
+  function updateDraftFilter(key, value) {
+    setDraftFilters((current) => ({ ...current, [key]: value }));
   }
 
   return (
-    <div className="category-filters expense-budget-filters" aria-label="Expense category filters">
-      <span className="category-filter-label">
-        <Filter size={15} />
-        Category
-      </span>
-      <div className="category-filter-options">
-        {filters.map((filter) => {
-          const config = filter === "All" || filter === "Expense" ? null : getCategoryConfigForAssets(filter, tagAssets);
-          return (
-            <button className={activeFilter === filter ? "is-active" : ""} type="button" key={filter} onClick={() => onChange(filter)}>
-              {config?.asset ? <TagIcon src={config.asset} size="tiny" /> : null}
-              {filter}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function ExpenseMetric({ label, value, detail = "" }) {
-  return (
-    <div className="expense-metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      {detail ? <small>{detail}</small> : null}
-    </div>
-  );
-}
-
-function BudgetExpenseRow({ row, onTrack }) {
-  const tagAssets = useTagAssets();
-  const config = row.category ? getCategoryConfigForAssets(row.category, tagAssets) : null;
-
-  return (
-    <article className={`budget-expense-row${row.isEstimate ? " is-estimate" : ""}`}>
-      <span className={`budget-expense-type category-${config?.className ?? "expense"}`}>
-        <span className="budget-expense-type-icon">
-          {config?.asset ? <TagIcon src={config.asset} size="tiny" /> : <ReceiptText size={14} />}
-        </span>
-        <span>{row.typeLabel}</span>
-      </span>
-      <div className="budget-expense-main">
-        <strong>{row.title}</strong>
-        <small>{row.context || (row.isEstimate ? "Planned cost" : "Tracked expense")}</small>
-      </div>
-      <div className="budget-expense-cost">
-        <strong>{row.displayAmountLabel ?? row.amountLabel}</strong>
-        <small>{row.displayMetaLabel ?? (row.isEstimate ? "Estimate" : "Tracked")}</small>
-        {onTrack ? (
-          <button className="ghost-button compact-action" type="button" onClick={onTrack}>
-            Track split
+    <div className="dialog-backdrop map-filter-backdrop">
+      <div className="dialog map-filter-dialog" role="dialog" aria-modal="true" aria-labelledby="map-filter-title">
+        <div className="dialog-header map-filter-dialog-header">
+          <div>
+            <h2 id="map-filter-title">Map filters</h2>
+            <p>{draftActiveFilterCount} active filter{draftActiveFilterCount === 1 ? "" : "s"}</p>
+          </div>
+          <button className="icon-button flat" type="button" data-dialog-close onClick={onCancel} aria-label="Close map filters">
+            <X size={18} />
           </button>
+        </div>
+
+        <div className="map-filter-sheet-body">
+          <MapSegmentedControl label="Source" value={draftFilters.source} options={MAP_SOURCE_FILTERS} onChange={(value) => updateDraftFilter("source", value)} />
+          <MapSegmentedControl label="Location" value={draftFilters.location} options={MAP_LOCATION_FILTERS} onChange={(value) => updateDraftFilter("location", value)} />
+
+          <div className="map-filter-sheet-selects">
+            <MapFilterSelect label="Day" value={draftFilters.dayId} options={[{ value: "All", label: "All days" }, ...dayOptions]} onChange={(value) => updateDraftFilter("dayId", value)} />
+            <MapFilterSelect label="City" value={draftFilters.city} options={[{ value: "All", label: "All cities" }, ...cityOptions]} onChange={(value) => updateDraftFilter("city", value)} />
+          </div>
+
+          <MapChipChoiceGroup label="Category" value={draftFilters.category} options={CATEGORY_FILTERS} onChange={(value) => updateDraftFilter("category", value)} />
+          <MapChipChoiceGroup label="Status" value={draftFilters.status} options={["All", ...STATUSES]} onChange={(value) => updateDraftFilter("status", value)} />
+        </div>
+
+        <div className="dialog-actions map-filter-dialog-actions">
+          <button className="ghost-button" type="button" onClick={() => setDraftFilters(MAP_DEFAULT_FILTERS)}>
+            Reset
+          </button>
+          <button className="primary-button" type="button" onClick={() => onApply(draftFilters)}>
+            Apply
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MapSegmentedControl({ label, value, options, onChange }) {
+  return (
+    <fieldset className="map-filter-choice-group">
+      <legend>{label}</legend>
+      <div className="map-filter-segmented">
+        {options.map((option) => (
+          <button className={option === value ? "is-active" : ""} type="button" key={option} aria-pressed={option === value} onClick={() => onChange(option)}>
+            {option}
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+function MapChipChoiceGroup({ label, value, options, onChange }) {
+  return (
+    <fieldset className="map-filter-choice-group">
+      <legend>{label}</legend>
+      <div className="map-filter-chip-grid">
+        {options.map((option) => (
+          <button className={option === value ? "is-active" : ""} type="button" key={option} aria-pressed={option === value} onClick={() => onChange(option)}>
+            {option}
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+function MapFilterSelect({ label, value, options, onChange }) {
+  return (
+    <label className="map-filter-select">
+      <span>{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {options.map((option) => (
+          <option value={option.value} key={option.value}>{option.label}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function MapPlaceholder({ title, detail, primaryAction = null, secondaryAction = null }) {
+  return (
+    <div className="map-placeholder">
+      <MapPin size={28} />
+      <strong>{title}</strong>
+      <span>{detail}</span>
+      {primaryAction || secondaryAction ? (
+        <div className="map-placeholder-actions">
+          {primaryAction ? <MapPlaceholderAction action={primaryAction} primary /> : null}
+          {secondaryAction ? <MapPlaceholderAction action={secondaryAction} /> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MapPlaceholderAction({ action, primary = false }) {
+  const Icon = action.icon;
+  return (
+    <button className={primary ? "primary-button" : "ghost-button"} type="button" onClick={action.onClick}>
+      {Icon ? <Icon size={16} aria-hidden="true" /> : null}
+      {action.label}
+    </button>
+  );
+}
+
+function getMapSetupMessage(remoteMapConfig = {}) {
+  if (remoteMapConfig.status === "loading") {
+    return {
+      title: "Loading map settings",
+      detail: "Reading the Google Maps key from Supabase secrets."
+    };
+  }
+
+  if (remoteMapConfig.status === "error") {
+    return {
+      title: "Map settings unavailable",
+      detail: remoteMapConfig.message || "Supabase could not return the Google Maps browser key."
+    };
+  }
+
+  if (GOOGLE_MAPS_EMBED_KEY) {
+    return {
+      title: "Map settings needed",
+      detail: "The app can use a local VITE_GOOGLE_MAPS_BROWSER_KEY or a Supabase maps-config secret to load the interactive map."
+    };
+  }
+
+  return {
+    title: "Map settings needed",
+    detail: "Add VITE_GOOGLE_MAPS_BROWSER_KEY locally or configure GOOGLE_MAPS_BROWSER_KEY in Supabase secrets."
+  };
+}
+
+function formatGoogleMapsApiError(error) {
+  const message = String(error?.message ?? error ?? "");
+  if (message.includes("ApiTargetBlockedMapError")) {
+    return "This key is blocked from the Maps JavaScript API. In Google Cloud, allow Maps JavaScript API on the browser key used by VITE_GOOGLE_MAPS_BROWSER_KEY.";
+  }
+  if (message.includes("RefererNotAllowedMapError")) {
+    return "This key is not allowed for this local preview URL. Add http://127.0.0.1:4173/* to the key's website restrictions.";
+  }
+  if (message.includes("InvalidKeyMapError") || message.includes("ExpiredKeyMapError")) {
+    return "Google rejected this browser map key. Check VITE_GOOGLE_MAPS_BROWSER_KEY in your local environment.";
+  }
+  return "Google Maps could not load. Check that VITE_GOOGLE_MAPS_BROWSER_KEY is enabled for Maps JavaScript API and allowed on this URL.";
+}
+
+function MapDetailCard({ item, previewState, onClose, onEdit, onOpenDay, onPromoteIdea }) {
+  const preview = previewState?.data ?? null;
+  const address = preview?.address || item.place?.formattedAddress || "";
+  const hasPreviewPhoto = Boolean(preview?.photoUri);
+  const isIdea = item.source === "idea";
+
+  return (
+    <article className="map-detail-card" aria-label={item.title}>
+      <button className="map-detail-close" type="button" aria-label="Close map details" onClick={onClose}>
+        <X size={15} />
+      </button>
+      {hasPreviewPhoto ? (
+        <figure className="map-detail-preview">
+          <img src={preview.photoUri} alt="" aria-hidden="true" loading="lazy" />
+          <PhotoAttribution attributions={preview.authorAttributions} />
+        </figure>
+      ) : null}
+      <div className="map-detail-title">
+        <span className={`map-detail-icon category-${item.categoryClass}`}>
+          <img src={item.iconSrc} alt="" aria-hidden="true" draggable={false} />
+        </span>
+        <div>
+          <strong>{item.title}</strong>
+          <small>{item.sourceLabel}{item.dayLabel ? ` · ${item.dayLabel}` : ""}</small>
+        </div>
+      </div>
+      <div className="map-detail-meta">
+        <span>{item.category}</span>
+        <span>{item.status}</span>
+        {item.city ? <span>{item.city}</span> : null}
+      </div>
+      {address ? <p className="map-detail-address">{address}</p> : null}
+      <div className="map-detail-actions">
+        {isIdea ? (
+          <button className="primary-button compact-action map-detail-promote-action" type="button" onClick={onPromoteIdea}>
+            <Plus size={15} />
+            Add as activity
+          </button>
+        ) : null}
+        <button className="ghost-button compact-action" type="button" onClick={onEdit}>
+          Edit
+        </button>
+        {item.source === "scheduled" ? (
+          <button className="ghost-button compact-action" type="button" onClick={onOpenDay}>
+            Day details
+          </button>
+        ) : null}
+        {item.googleMapsUrl ? (
+          <a className="ghost-button compact-action" href={item.googleMapsUrl} target="_blank" rel="noreferrer">
+            <ExternalLink size={15} />
+            Open map
+          </a>
         ) : null}
       </div>
     </article>
   );
 }
+
+function PhotoAttribution({ attributions = [] }) {
+  const attribution = attributions.find((entry) => entry.displayName || entry.uri);
+  if (!attribution) {
+    return null;
+  }
+
+  const label = attribution.displayName || "Photo";
+  return (
+    <figcaption className="map-detail-attribution">
+      {attribution.uri ? (
+        <a href={attribution.uri} target="_blank" rel="noreferrer">{label}</a>
+      ) : (
+        label
+      )}
+    </figcaption>
+  );
+}
+
+function MapLocationRow({ item, onEdit }) {
+  return (
+    <article className="map-location-row">
+      <span className={`map-detail-icon category-${item.categoryClass}`}>
+        <img src={item.iconSrc} alt="" aria-hidden="true" draggable={false} />
+      </span>
+      <div>
+        <strong>{item.title}</strong>
+        <small>{item.sourceLabel}{item.dayLabel ? ` · ${item.dayLabel}` : ""}</small>
+        <span>Needs a resolved location to appear on the map.</span>
+      </div>
+      <button className="ghost-button compact-action" type="button" onClick={onEdit}>
+        Add location
+      </button>
+    </article>
+  );
+}
+
+function formatRouteTravelMode(mode) {
+  const labels = {
+    WALK: "Walk",
+    DRIVE: "Drive",
+    TRANSIT: "Transit"
+  };
+  return labels[mode] ?? "Walk";
+}
+
+function RouteModeChips({ modes = [], fallbackMode = "", label = "" }) {
+  const displayModes = normalizeRouteModes(modes, fallbackMode);
+
+  return (
+    <div className="map-route-mode-chips" aria-label="Route movement types">
+      {displayModes.map((mode) => {
+        const config = getRouteModeConfig(mode);
+        const Icon = config.icon;
+        return (
+          <span key={mode}>
+            <Icon size={13} aria-hidden="true" />
+            {config.label}
+          </span>
+        );
+      })}
+      {label ? <em>{label}</em> : null}
+    </div>
+  );
+}
+
+function normalizeRouteModes(modes = [], fallbackMode = "") {
+  const normalized = [...new Set((modes ?? []).map((mode) => String(mode).toLowerCase()).filter(Boolean))];
+  if (normalized.length) {
+    return normalized;
+  }
+  const fallback = String(fallbackMode).toLowerCase();
+  if (fallback === "walk") {
+    return ["walk"];
+  }
+  if (fallback === "drive") {
+    return ["car"];
+  }
+  return ["transit"];
+}
+
+function getRouteModeConfig(mode) {
+  const configs = {
+    walk: { label: "Walk", icon: Footprints },
+    train: { label: "Train", icon: Train },
+    bus: { label: "Bus", icon: Bus },
+    car: { label: "Car", icon: Car },
+    transit: { label: "Transit", icon: Route }
+  };
+  return configs[mode] ?? configs.transit;
+}
+
+function humanizeRouteNote(note) {
+  const value = String(note ?? "");
+  if (!value || value.toLowerCase().includes("navitime") || value.toLowerCase().includes("google")) {
+    return "Planning estimate. Check live train times before you go.";
+  }
+  return value;
+}
+
+function formatRouteDistance(distanceMeters) {
+  const meters = Number(distanceMeters) || 0;
+  if (meters <= 0) {
+    return "Distance unavailable";
+  }
+  return formatDistanceKm(meters / 1000);
+}
+
+function formatRouteFare(fareYen) {
+  const fare = Number(fareYen);
+  if (!Number.isFinite(fare) || fare <= 0) {
+    return "";
+  }
+  return `¥${Math.round(fare).toLocaleString("en-US")}`;
+}
+
 
 function InviteWelcomeModal({ tripName, travelerName, onContinue }) {
   const [name, setName] = useState(travelerName ?? "");
@@ -4267,7 +6180,7 @@ function InviteWelcomeModal({ tripName, travelerName, onContinue }) {
           <div>
             <span className="identity-kicker">Trip invite</span>
             <h2 id="invite-welcome-title">Welcome to {tripName || "this trip"}</h2>
-            <p>Confirm how your name should appear for votes, plans, and split expenses.</p>
+            <p>Confirm how your name should appear for reactions, plans, and split expenses.</p>
           </div>
         </div>
 
@@ -4297,8 +6210,8 @@ function InviteWelcomeModal({ tripName, travelerName, onContinue }) {
 function TravelerIdentityPrompt({ tripName, travelers, currentUserId, defaultTravelerName = "Traveler", isOwnerRecovery = false, recoveryMessage = "", onClaimTraveler, onCreateOwnTraveler }) {
   const title = isOwnerRecovery ? "Link your organizer profile" : "Which traveler are you?";
   const helper = isOwnerRecovery
-    ? "We could not link your organizer account automatically. Choose who you are so votes and split expenses stay under your account."
-    : `Choose your traveler for ${tripName || "this trip"} so votes and split expenses attach to the right person.`;
+    ? "We could not link your organizer account automatically. Choose who you are so reactions and split expenses stay under your account."
+    : `Choose your traveler for ${tripName || "this trip"} so reactions and split expenses attach to the right person.`;
   const hasAvailableTraveler = travelers.some((traveler) => !traveler.profileId || traveler.profileId === currentUserId);
 
   return (
@@ -4349,346 +6262,6 @@ function TravelerIdentityPrompt({ tripName, travelers, currentUserId, defaultTra
   );
 }
 
-function buildExpenseSourceLookup(trip) {
-  const lookup = new Map();
-  let sortIndex = 0;
-
-  (trip?.days ?? []).forEach((day) => {
-    (day.schedule ?? []).forEach((item) => {
-      lookup.set(getExpenseSourceKey(EXPENSE_SOURCE_TYPES.SCHEDULE_ITEM, item.id), {
-        title: item.title,
-        category: item.category,
-        city: item.city || day.city,
-        date: day.date,
-        sourceLabel: `Day ${day.dayNumber}`,
-        sortIndex
-      });
-      sortIndex += 1;
-    });
-  });
-
-  (trip?.ideas ?? []).forEach((idea) => {
-    lookup.set(getExpenseSourceKey(EXPENSE_SOURCE_TYPES.IDEA, idea.id), {
-      title: idea.title,
-      category: idea.category,
-      city: idea.city,
-      date: "",
-      sourceLabel: "Idea",
-      sortIndex
-    });
-    sortIndex += 1;
-  });
-
-  return lookup;
-}
-
-function buildBudgetRows({ expenses = [], suggestions = [], sourceLookup = new Map() }) {
-  const trackedRows = expenses.map((expense, index) => {
-    const source = expense.sourceClientId ? sourceLookup.get(getExpenseSourceKey(expense.sourceType, expense.sourceClientId)) : null;
-    const category = source?.category || deriveBudgetCategory(expense.sourceType);
-    return {
-      id: `tracked-${expense.clientId}`,
-      title: expense.title || source?.title || "Untitled expense",
-      typeLabel: deriveBudgetTypeLabel({ sourceType: expense.sourceType, category }),
-      category,
-      context: [source?.sourceLabel || formatSourceType(expense.sourceType), source?.city, expense.expenseDate].filter(Boolean).join(" · "),
-      amountMinor: expense.amountMinor,
-      currency: expense.currency,
-      amountLabel: formatMoney(expense.amountMinor, expense.currency),
-      filterValue: category || "Expense",
-      sortDate: source?.date || expense.expenseDate || "",
-      sortIndex: source?.sortIndex ?? 10000 + index,
-      isEstimate: false
-    };
-  });
-
-  const estimateRows = suggestions.map((suggestion, index) => {
-    const category = suggestion.category || deriveBudgetCategory(suggestion.sourceType);
-    return {
-      id: `estimate-${suggestion.sourceType}-${suggestion.sourceClientId}`,
-      title: suggestion.title || "Untitled cost",
-      typeLabel: deriveBudgetTypeLabel({ sourceType: suggestion.sourceType, category }),
-      category,
-      context: [suggestion.sourceLabel, suggestion.city].filter(Boolean).join(" · "),
-      amountMinor: suggestion.parsedCost?.amountMinor ?? 0,
-      currency: suggestion.parsedCost?.currency ?? "JPY",
-      amountLabel: suggestion.parsedCost ? formatMoney(suggestion.parsedCost.amountMinor, suggestion.parsedCost.currency) : suggestion.rawCost,
-      filterValue: category || "Expense",
-      sortDate: suggestion.date || "",
-      sortIndex: 20000 + index,
-      isEstimate: true,
-      suggestion
-    };
-  });
-
-  return [...trackedRows, ...estimateRows].sort((a, b) => {
-    if (a.sortDate && b.sortDate && a.sortDate !== b.sortDate) {
-      return a.sortDate.localeCompare(b.sortDate);
-    }
-    if (a.sortDate !== b.sortDate) {
-      return a.sortDate ? -1 : 1;
-    }
-    return a.sortIndex - b.sortIndex;
-  });
-}
-
-function buildBudgetFilters(rows = []) {
-  const filters = rows.reduce((list, row) => {
-    if (row.filterValue && !list.includes(row.filterValue)) {
-      list.push(row.filterValue);
-    }
-    return list;
-  }, []);
-
-  return ["All", ...filters];
-}
-
-function summarizeBudgetRows(rows = []) {
-  const totalsByCurrency = new Map();
-  rows.forEach((row) => {
-    if (!row.amountMinor || row.amountMinor <= 0) {
-      return;
-    }
-    totalsByCurrency.set(row.currency, (totalsByCurrency.get(row.currency) ?? 0) + row.amountMinor);
-  });
-
-  return Array.from(totalsByCurrency.entries()).map(([currency, total]) => ({ currency, total }));
-}
-
-function formatBudgetTotal(rows = [], currencyView = "native", jpyPerUsd = DEFAULT_JPY_PER_USD) {
-  if (currencyView === "native") {
-    return formatMoneyList(summarizeBudgetRows(rows));
-  }
-
-  const normalizedView = currencyView === "USD" ? "USD" : "JPY";
-  const total = rows.reduce((sum, row) => {
-    if (!row.amountMinor || row.amountMinor <= 0) {
-      return sum;
-    }
-    return sum + convertMoneyMinor(row.amountMinor, row.currency, normalizedView, jpyPerUsd);
-  }, 0);
-
-  return `~${formatMoney(total, normalizedView)}`;
-}
-
-function formatBudgetDisplayRow(row, currencyView = "native", jpyPerUsd = DEFAULT_JPY_PER_USD) {
-  if (currencyView === "native" || !row.amountMinor || row.amountMinor <= 0) {
-    return {
-      ...row,
-      displayAmountLabel: row.amountLabel,
-      displayMetaLabel: row.isEstimate ? "Estimate" : "Tracked"
-    };
-  }
-
-  const normalizedView = currencyView === "USD" ? "USD" : "JPY";
-  const convertedAmount = convertMoneyMinor(row.amountMinor, row.currency, normalizedView, jpyPerUsd);
-  const baseMeta = row.isEstimate ? "Estimate" : "Tracked";
-
-  return {
-    ...row,
-    displayAmountLabel: `~${formatMoney(convertedAmount, normalizedView)}`,
-    displayMetaLabel: row.currency === normalizedView ? baseMeta : `${baseMeta} · from ${row.currency}`
-  };
-}
-
-function convertMoneyMinor(amountMinor, sourceCurrency = "JPY", targetCurrency = "JPY", jpyPerUsd = DEFAULT_JPY_PER_USD) {
-  const amount = Math.max(0, Number(amountMinor) || 0);
-  const source = String(sourceCurrency || "JPY").toUpperCase();
-  const target = String(targetCurrency || "JPY").toUpperCase();
-  const rate = normalizeExchangeRate(jpyPerUsd);
-
-  if (source === target) {
-    return Math.round(amount);
-  }
-
-  if (source === "JPY" && target === "USD") {
-    return Math.round((amount / rate) * 100);
-  }
-
-  if (source === "USD" && target === "JPY") {
-    return Math.round((amount / 100) * rate);
-  }
-
-  return Math.round(amount);
-}
-
-function normalizeExchangeRate(value) {
-  const rate = Number(value);
-  return Number.isFinite(rate) && rate > 0 ? rate : DEFAULT_JPY_PER_USD;
-}
-
-function deriveBudgetCategory(sourceType) {
-  if (sourceType === EXPENSE_SOURCE_TYPES.SCHEDULE_ITEM) {
-    return "";
-  }
-  if (sourceType === EXPENSE_SOURCE_TYPES.IDEA) {
-    return "";
-  }
-  return "";
-}
-
-function deriveBudgetTypeLabel({ sourceType, category }) {
-  if (sourceType === EXPENSE_SOURCE_TYPES.MANUAL) {
-    return "Expense";
-  }
-  if (category) {
-    return category;
-  }
-  if (sourceType === EXPENSE_SOURCE_TYPES.SCHEDULE_ITEM) {
-    return "Activity expense";
-  }
-  if (sourceType === EXPENSE_SOURCE_TYPES.IDEA) {
-    return "Idea expense";
-  }
-  return "Expense";
-}
-
-function ExpenseRow({ expense, travelerNameByClientId, onEdit, onDelete }) {
-  const paidByName = travelerNameByClientId.get(expense.paidByTravelerClientId) ?? "Traveler";
-  const participants = expense.participantTravelerClientIds
-    .map((clientId) => travelerNameByClientId.get(clientId))
-    .filter(Boolean)
-    .join(", ");
-
-  return (
-    <article className="tracked-expense-row">
-      <button className="tracked-expense-main" type="button" onClick={onEdit}>
-        <span>
-          <strong>{expense.title}</strong>
-          <small>{[expense.expenseDate, formatSourceType(expense.sourceType)].filter(Boolean).join(" · ") || "Manual"}</small>
-        </span>
-        <span>
-          <strong>{formatMoney(expense.amountMinor, expense.currency)}</strong>
-          <small>Paid by {paidByName}</small>
-        </span>
-        <small>Split: {participants || "No one selected"}</small>
-      </button>
-      <button className="icon-button flat" type="button" aria-label={`Delete ${expense.title}`} onClick={onDelete}>
-        <Trash2 size={16} />
-      </button>
-    </article>
-  );
-}
-
-function ExpenseModal({ mode, expense, travelers, onCancel, onSave, onDelete }) {
-  const {
-    formState: { errors },
-    handleSubmit: submitExpenseForm,
-    register,
-    setValue,
-    watch
-  } = useForm({
-    resolver: zodResolver(EXPENSE_FORM_SCHEMA),
-    defaultValues: {
-      title: expense.title ?? "",
-      amountInput: expense.amountMinor ? formatMajorAmount(expense.amountMinor, expense.currency) : "",
-      currency: expense.currency ?? SUPPORTED_CURRENCIES[0],
-      paidByTravelerClientId: expense.paidByTravelerClientId ?? travelers[0]?.clientId ?? "",
-      expenseDate: expense.expenseDate ?? "",
-      participantTravelerClientIds: expense.participantTravelerClientIds ?? [],
-      notes: expense.notes ?? ""
-    }
-  });
-  const participantTravelerClientIds = watch("participantTravelerClientIds") ?? [];
-
-  function toggleParticipant(travelerClientId) {
-    const nextParticipants = participantTravelerClientIds.includes(travelerClientId)
-      ? participantTravelerClientIds.filter((clientId) => clientId !== travelerClientId)
-      : [...participantTravelerClientIds, travelerClientId];
-    setValue("participantTravelerClientIds", nextParticipants, { shouldDirty: true, shouldValidate: true });
-  }
-
-  function handleExpenseSave(formValues) {
-    const parsedAmount = parseMoneyValue(`${formValues.currency} ${formValues.amountInput}`, formValues.currency);
-    onSave({
-      ...expense,
-      ...formValues,
-      title: formValues.title.trim(),
-      amountMinor: parsedAmount?.amountMinor ?? expense.amountMinor,
-      currency: parsedAmount?.currency ?? formValues.currency,
-      notes: formValues.notes?.trim() ?? ""
-    });
-  }
-  const formError = errors.title?.message || errors.amountInput?.message || errors.paidByTravelerClientId?.message || errors.participantTravelerClientIds?.message;
-
-  return (
-    <div className="dialog-backdrop" role="presentation">
-      <div className="dialog editor-dialog expense-dialog" role="dialog" aria-modal="true" aria-label={mode === "edit" ? "Edit expense" : "Add expense"}>
-        <DialogHeader title={mode === "edit" ? "Edit expense" : "Add expense"} onClose={onCancel} />
-        <form className="expense-form" onSubmit={submitExpenseForm(handleExpenseSave)}>
-          <label className="editor-field editor-field-title">
-            Title
-            <input {...register("title")} placeholder="TeamLab tickets, train cards, dinner..." />
-          </label>
-
-          <div className="expense-form-grid">
-            <label className="editor-field">
-              Amount
-              <input {...register("amountInput")} inputMode="decimal" placeholder="6400" />
-            </label>
-            <label className="editor-field">
-              Currency
-              <select {...register("currency")}>
-                {SUPPORTED_CURRENCIES.map((currency) => <option key={currency}>{currency}</option>)}
-              </select>
-            </label>
-            <label className="editor-field">
-              Paid by
-              <select {...register("paidByTravelerClientId")}>
-                {travelers.map((traveler) => (
-                  <option value={traveler.clientId} key={traveler.clientId}>{traveler.name}</option>
-                ))}
-              </select>
-            </label>
-            <label className="editor-field">
-              Date
-              <input {...register("expenseDate")} type="date" />
-            </label>
-          </div>
-
-          <fieldset className="expense-participants">
-            <legend>Split between</legend>
-            <div>
-              {travelers.map((traveler) => (
-                <label key={traveler.clientId}>
-                  <input
-                    type="checkbox"
-                    checked={participantTravelerClientIds.includes(traveler.clientId)}
-                    onChange={() => toggleParticipant(traveler.clientId)}
-                  />
-                  <span>{traveler.name}</span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
-
-          <label className="editor-field editor-field-notes">
-            Notes
-            <textarea {...register("notes")} placeholder="Reservation number, who reimbursed outside the app, or anything useful..." />
-          </label>
-
-          {formError ? <p className="expense-form-error">{formError}</p> : null}
-
-          <div className="dialog-actions">
-            {onDelete ? (
-              <button className="ghost-button danger" type="button" onClick={onDelete}>
-                <Trash2 size={17} />
-                Delete
-              </button>
-            ) : null}
-            <button className="ghost-button" type="button" onClick={onCancel}>
-              Cancel
-            </button>
-            <button className="primary-button" type="submit">
-              <Check size={17} />
-              Save
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
 
 function IdeaFilters({ activeCategory, onChange }) {
   const tagAssets = useTagAssets();
@@ -4715,23 +6288,12 @@ function IdeaFilters({ activeCategory, onChange }) {
   );
 }
 
-function ActivityIdeaPicker({ ideas, allIdeas, travelers, activeTab, activeCategory, pendingIdeaId, onTabChange, onCategoryChange, onPickIdea }) {
+function ActivityIdeaPicker({ ideas, searchQuery, activeCategory, pendingIdeaId, onCategoryChange, onPickIdea }) {
   const isAdding = Boolean(pendingIdeaId);
+  const hasSearchQuery = Boolean(searchQuery.trim());
 
   return (
     <div className="activity-idea-picker">
-      <div className="activity-idea-tabs">
-        <div className="ideas-tab-list" role="tablist" aria-label="Activity idea views">
-          {FILTER_TABS.map((tab) => (
-            <button className={activeTab === tab ? "is-active" : ""} type="button" role="tab" aria-selected={activeTab === tab} key={tab} onClick={() => onTabChange(tab)}>
-              {tab}
-              {tab === "Booked" ? <span className="idea-tab-count is-booked">{countStatus(allIdeas, "Booked")}</span> : null}
-              {tab === "Maybe" ? <span className="idea-tab-count is-maybe">{countStatus(allIdeas, "Maybe")}</span> : null}
-            </button>
-          ))}
-        </div>
-      </div>
-
       <IdeaFilters activeCategory={activeCategory} onChange={onCategoryChange} />
 
       <div className="activity-idea-list" aria-label="Pick one idea to add">
@@ -4739,21 +6301,20 @@ function ActivityIdeaPicker({ ideas, allIdeas, travelers, activeTab, activeCateg
           <IdeaPickerRow
             idea={idea}
             key={idea.id}
-            travelers={travelers}
             disabled={isAdding}
             isPending={pendingIdeaId === idea.id}
             onPick={() => onPickIdea(idea)}
           />
         ))}
         {!ideas.length ? (
-          <p className="activity-idea-empty">No ideas match these filters.</p>
+          <p className="activity-idea-empty">{hasSearchQuery ? "No ideas match this search." : "No ideas match these filters."}</p>
         ) : null}
       </div>
     </div>
   );
 }
 
-function IdeaPickerRow({ idea, travelers, disabled, isPending, onPick }) {
+function IdeaPickerRow({ idea, disabled, isPending, onPick }) {
   const tagAssets = useTagAssets();
   const config = getCategoryConfigForAssets(idea.category, tagAssets);
 
@@ -4765,80 +6326,37 @@ function IdeaPickerRow({ idea, travelers, disabled, isPending, onPick }) {
       <button className="idea-main" type="button" disabled={disabled} onClick={onPick}>
         <strong>{idea.title}</strong>
         <small>{idea.city || "Japan"}</small>
-        <span className="idea-meta-line">
-          <span className={`status-pill ${STATUS_CLASS[idea.status]}`}>
-            <TagIcon src={getStatusAsset(idea.status, tagAssets)} size="tiny" />
-            {idea.status}
-          </span>
-          {idea.cost ? <span>{idea.cost}</span> : null}
-        </span>
       </button>
-      <div className="idea-votes" aria-label={`${idea.title} traveler votes`}>
-        {travelers.map((traveler) => {
-          const vote = idea.votes?.[traveler] ?? "";
-          return (
-            <span className={`vote-icon vote-${vote || "none"}`} key={traveler} title={`${traveler}: ${VOTE_LABELS[vote]}`}>
-              <span>{traveler.slice(0, 1)}</span>
-              <Heart size={19} fill={vote === "love" ? "currentColor" : "none"} />
-            </span>
-          );
-        })}
+      <span className={`status-pill idea-status ${STATUS_CLASS[idea.status]}`}>
+        <TagIcon src={getStatusAsset(idea.status, tagAssets)} size="tiny" />
+        {idea.status}
+      </span>
+      <div className="idea-actions">
+        {idea.cost ? <span className="idea-cost-chip">{idea.cost}</span> : null}
+        <button className="promote-button" type="button" disabled={disabled} onClick={onPick}>
+          <Plus size={16} />
+          {isPending ? "Adding..." : "Add"}
+        </button>
       </div>
-      <button className="promote-button" type="button" disabled={disabled} onClick={onPick}>
-        <Plus size={16} />
-        {isPending ? "Adding..." : "Add"}
-      </button>
     </article>
   );
 }
 
-function IdeaRow({ idea, travelers, currentTravelerName, onEdit, onDelete, onVote, onPromote }) {
-  const tagAssets = useTagAssets();
-  const config = getCategoryConfigForAssets(idea.category, tagAssets);
-
+function SharingModal(props) {
   return (
-    <article className="idea-row">
-      <button className={`idea-thumb category-${config.className}`} type="button" onClick={onEdit} aria-label={`Edit ${idea.title}`}>
-        <TagIcon src={config.asset} size="thumb" />
-      </button>
-      <button className="idea-main" type="button" onClick={onEdit}>
-        <strong>{idea.title}</strong>
-        <small>{idea.city || "Japan"}</small>
-        <span className="idea-meta-line">
-          <span className={`status-pill ${STATUS_CLASS[idea.status]}`}>
-            <TagIcon src={getStatusAsset(idea.status, tagAssets)} size="tiny" />
-            {idea.status}
-          </span>
-        </span>
-      </button>
-      <div className="idea-votes" aria-label={`${idea.title} traveler votes`}>
-        {travelers.map((traveler) => {
-          const vote = idea.votes?.[traveler] ?? "";
-          const isLinkedTraveler = currentTravelerName === traveler;
-          return (
-            <button
-              className={`vote-icon vote-${vote || "none"}`}
-              type="button"
-              key={traveler}
-              disabled={!isLinkedTraveler}
-              onClick={() => onVote(traveler)}
-              title={isLinkedTraveler ? `${traveler}: ${VOTE_LABELS[vote]}` : `Only ${traveler} can vote here`}
-            >
-              <span>{traveler.slice(0, 1)}</span>
-              <Heart size={19} fill={vote === "love" ? "currentColor" : "none"} />
-            </button>
-          );
-        })}
-      </div>
-      <button className="promote-button" type="button" onClick={onPromote}>
-        <Plus size={16} />
-        Add as Activity
-      </button>
-    </article>
+    <React.Suspense fallback={<FeatureLoading label="people forms" />}>
+      <LazyValidatedForm schema="invite" defaultValues={{ email: "", role: "editor" }}>
+        {(inviteForm) => (
+          <LazyValidatedForm schema="passwordUser" defaultValues={{ email: "", displayName: "", password: "", role: "editor" }}>
+            {(passwordUserForm) => <SharingModalContent {...props} inviteForm={inviteForm} passwordUserForm={passwordUserForm} />}
+          </LazyValidatedForm>
+        )}
+      </LazyValidatedForm>
+    </React.Suspense>
   );
 }
 
-function SharingModal({
+function SharingModalContent({
   collaboration,
   currentUserId,
   currentMember,
@@ -4854,9 +6372,12 @@ function SharingModal({
   onRevokeInvite,
   onClaimTraveler,
   onRenameTraveler,
-  onClose
+  onClose,
+  inviteForm,
+  passwordUserForm
 }) {
   const [activePeopleTab, setActivePeopleTab] = useState("share");
+  const [activeShareMethod, setActiveShareMethod] = useState("invite");
   const [travelerRenameDraft, setTravelerRenameDraft] = useState(null);
   const currentRole = formatRoleLabel(currentMember?.role ?? "editor");
   const {
@@ -4865,13 +6386,7 @@ function SharingModal({
     register: registerInvite,
     setValue: setInviteValue,
     watch: watchInvite
-  } = useForm({
-    resolver: zodResolver(INVITE_FORM_SCHEMA),
-    defaultValues: {
-      email: "",
-      role: "editor"
-    }
-  });
+  } = inviteForm;
   const inviteValues = watchInvite();
   const {
     formState: { errors: passwordUserErrors, isSubmitting: isPasswordUserSubmitting },
@@ -4879,15 +6394,7 @@ function SharingModal({
     register: registerPasswordUser,
     reset: resetPasswordUserForm,
     watch: watchPasswordUser
-  } = useForm({
-    resolver: zodResolver(PASSWORD_USER_FORM_SCHEMA),
-    defaultValues: {
-      email: "",
-      displayName: "",
-      password: "",
-      role: "editor"
-    }
-  });
+  } = passwordUserForm;
   const passwordUserValues = watchPasswordUser();
 
   async function handleInviteFormSubmit(formValues) {
@@ -4932,7 +6439,7 @@ function SharingModal({
           </div>
           <div className="people-header-actions">
             <span className={`role-pill role-${currentMember?.role ?? "editor"}`}>{currentRole}</span>
-            <button className="icon-button" type="button" aria-label="Close dialog" onClick={onClose}>
+            <button className="icon-button" type="button" aria-label="Close dialog" data-dialog-close onClick={onClose}>
               <X size={18} />
             </button>
           </div>
@@ -4940,7 +6447,7 @@ function SharingModal({
 
         <div className="people-tabs" role="tablist" aria-label="People sections">
           <button className={activePeopleTab === "share" ? "is-active" : ""} type="button" role="tab" aria-selected={activePeopleTab === "share"} onClick={() => setActivePeopleTab("share")}>
-            Share trip
+            People &amp; access
           </button>
           <button className={activePeopleTab === "travelers" ? "is-active" : ""} type="button" role="tab" aria-selected={activePeopleTab === "travelers"} onClick={() => setActivePeopleTab("travelers")}>
             Travelers
@@ -4948,132 +6455,14 @@ function SharingModal({
         </div>
 
         {activePeopleTab === "share" ? (
-          <div className="people-tab-panel" role="tabpanel" aria-label="Share trip">
-            {canManage ? (
-              <section className="sharing-section people-invite-panel">
-                <div className="sharing-section-title">
-                  <div>
-                    <strong>Invite someone</strong>
-                    <small>Send an invite link. They will confirm their traveler name when they join.</small>
-                  </div>
-                </div>
-                <form className="invite-form" onSubmit={submitInviteForm(handleInviteFormSubmit)}>
-                  <label className="editor-field">
-                    Email
-                    <input
-                      {...registerInvite("email")}
-                      type="email"
-                      placeholder="friend@example.com"
-                    />
-                  </label>
-                  <label className="editor-field">
-                    Access
-                    <select {...registerInvite("role")}>
-                      <option value="editor">Can edit</option>
-                      <option value="viewer">View only</option>
-                    </select>
-                  </label>
-                  <button className="primary-button" type="submit" disabled={isInviteSubmitting || !inviteValues.email?.trim()}>
-                    <UserPlus size={17} />
-                    Create invite link
-                  </button>
-                </form>
-                {inviteErrors.email?.message || inviteErrors.role?.message ? (
-                  <p className="expense-form-error">{inviteErrors.email?.message || inviteErrors.role?.message}</p>
-                ) : null}
-
-                {latestInviteUrl ? (
-                  <div className="invite-link-box">
-                    <label className="editor-field">
-                      Invite link
-                      <input value={latestInviteUrl} readOnly onFocus={(event) => event.target.select()} />
-                    </label>
-                    <button className="ghost-button" type="button" onClick={onCopyInvite}>
-                      <Copy size={17} />
-                      Copy link
-                    </button>
-                  </div>
-                ) : null}
-
-                <div className="auth-divider">
-                  <small>or</small>
-                </div>
-
-                <div className="sharing-section-title compact-title">
-                  <div>
-                    <strong>Create password user</strong>
-                    <small>Create or update an account without sending auth email.</small>
-                  </div>
-                </div>
-                <form className="invite-form password-user-form" onSubmit={submitPasswordUserForm(handlePasswordUserFormSubmit)}>
-                  <label className="editor-field">
-                    Email
-                    <input
-                      {...registerPasswordUser("email")}
-                      type="email"
-                      placeholder="tester@example.com"
-                    />
-                  </label>
-                  <label className="editor-field">
-                    Display name
-                    <input
-                      {...registerPasswordUser("displayName")}
-                      placeholder="Tester"
-                    />
-                  </label>
-                  <label className="editor-field">
-                    Password
-                    <input
-                      {...registerPasswordUser("password")}
-                      type="password"
-                      placeholder="At least 6 characters"
-                      autoComplete="new-password"
-                    />
-                  </label>
-                  <label className="editor-field">
-                    Access
-                    <select {...registerPasswordUser("role")}>
-                      <option value="editor">Can edit</option>
-                      <option value="viewer">View only</option>
-                    </select>
-                  </label>
-                  <button className="primary-button" type="submit" disabled={isPasswordUserSubmitting || !passwordUserValues.email?.trim() || !passwordUserValues.password}>
-                    <UserPlus size={17} />
-                    Create user
-                  </button>
-                </form>
-                {passwordUserErrors.email?.message || passwordUserErrors.password?.message || passwordUserErrors.role?.message ? (
-                  <p className="expense-form-error">{passwordUserErrors.email?.message || passwordUserErrors.password?.message || passwordUserErrors.role?.message}</p>
-                ) : null}
-
-                <div className="sharing-list">
-                  <div className="sharing-section-title compact-title">
-                    <strong>Pending invites</strong>
-                  </div>
-                  {pendingInvitations.map((invite) => (
-                    <div className="sharing-row" key={invite.id}>
-                      <span>
-                        <strong>{invite.email}</strong>
-                        <small>{formatRoleLabel(invite.role)} • expires {formatShortDate(invite.expiresAt)}</small>
-                      </span>
-                      <button className="ghost-button compact-action" type="button" onClick={() => onRevokeInvite(invite.id)}>
-                        Revoke
-                      </button>
-                    </div>
-                  ))}
-                  {!pendingInvitations.length ? <p className="empty-trip-list">No pending invites.</p> : null}
-                </div>
-              </section>
-            ) : (
-              <p className="dialog-note">{status === "loading" ? "Loading people..." : "Only the trip owner can invite people."}</p>
-            )}
-
-            <section className="sharing-section people-members-section">
+          <div className="people-tab-panel" role="tabpanel" aria-label="People and access">
+            <section className="sharing-section people-access-section" aria-labelledby="people-access-title">
               <div className="sharing-section-title">
                 <div>
-                  <strong>People with access</strong>
-                  <small>Signed-in accounts that can open this trip.</small>
+                  <strong id="people-access-title">Trip access</strong>
+                  <small>People who can open this trip.</small>
                 </div>
+                <span className="people-section-count">{collaboration.members.length} {collaboration.members.length === 1 ? "person" : "people"}</span>
               </div>
               <div className="sharing-list people-member-list">
                 {collaboration.members.map((member) => (
@@ -5087,7 +6476,120 @@ function SharingModal({
                 ))}
                 {!collaboration.members.length ? <p className="empty-trip-list">No people with access yet.</p> : null}
               </div>
+
+              {pendingInvitations.length ? (
+                <div className="people-pending-invites" aria-labelledby="pending-invites-title">
+                  <div className="sharing-section-title compact-title">
+                    <strong id="pending-invites-title">Pending invitations</strong>
+                    <span className="people-section-count">{pendingInvitations.length}</span>
+                  </div>
+                  <div className="sharing-list">
+                    {pendingInvitations.map((invite) => (
+                      <div className="sharing-row" key={invite.id}>
+                        <span>
+                          <strong>{invite.email}</strong>
+                          <small>{formatRoleLabel(invite.role)} • expires {formatShortDate(invite.expiresAt)}</small>
+                        </span>
+                        <button className="ghost-button compact-action" type="button" onClick={() => onRevokeInvite(invite.id)}>
+                          Revoke
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </section>
+
+            {canManage ? (
+              <section className="sharing-section people-add-section" aria-labelledby="add-person-title">
+                <div className="sharing-section-title">
+                  <div>
+                    <strong id="add-person-title">Add person</strong>
+                    <small>Choose how you want to give someone access.</small>
+                  </div>
+                </div>
+                <div className="people-method-tabs" role="tablist" aria-label="Add person method">
+                  <button className={activeShareMethod === "invite" ? "is-active" : ""} type="button" role="tab" aria-selected={activeShareMethod === "invite"} onClick={() => setActiveShareMethod("invite")}>
+                    Invite by link
+                  </button>
+                  <button className={activeShareMethod === "password" ? "is-active" : ""} type="button" role="tab" aria-selected={activeShareMethod === "password"} onClick={() => setActiveShareMethod("password")}>
+                    Password account
+                  </button>
+                </div>
+
+                {activeShareMethod === "invite" ? (
+                  <div className="people-method-panel" role="tabpanel" aria-label="Invite by link">
+                    <p className="people-method-description">Create a link for someone to join this trip.</p>
+                    <form className="invite-form" onSubmit={submitInviteForm(handleInviteFormSubmit)}>
+                      <label className="editor-field">
+                        Email
+                        <input {...registerInvite("email")} type="email" placeholder="friend@example.com" />
+                      </label>
+                      <label className="editor-field">
+                        Access
+                        <select {...registerInvite("role")}>
+                          <option value="editor">Can edit</option>
+                          <option value="viewer">View only</option>
+                        </select>
+                      </label>
+                      <button className="primary-button" type="submit" disabled={isInviteSubmitting || !inviteValues.email?.trim()}>
+                        <UserPlus size={17} />
+                        Create invite link
+                      </button>
+                    </form>
+                    {inviteErrors.email?.message || inviteErrors.role?.message ? (
+                      <p className="expense-form-error">{inviteErrors.email?.message || inviteErrors.role?.message}</p>
+                    ) : null}
+                    {latestInviteUrl ? (
+                      <div className="invite-link-box">
+                        <label className="editor-field">
+                          Invite link
+                          <input value={latestInviteUrl} readOnly onFocus={(event) => event.target.select()} />
+                        </label>
+                        <button className="ghost-button" type="button" onClick={onCopyInvite}>
+                          <Copy size={17} />
+                          Copy link
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="people-method-panel" role="tabpanel" aria-label="Password account">
+                    <p className="people-method-description">Create or update an account without sending an auth email.</p>
+                    <form className="password-user-form" onSubmit={submitPasswordUserForm(handlePasswordUserFormSubmit)}>
+                      <label className="editor-field people-password-email">
+                        Email
+                        <input {...registerPasswordUser("email")} type="email" placeholder="tester@example.com" />
+                      </label>
+                      <label className="editor-field people-password-name">
+                        Display name
+                        <input {...registerPasswordUser("displayName")} placeholder="Tester" />
+                      </label>
+                      <label className="editor-field">
+                        Password
+                        <input {...registerPasswordUser("password")} type="password" placeholder="At least 6 characters" autoComplete="new-password" />
+                      </label>
+                      <label className="editor-field">
+                        Access
+                        <select {...registerPasswordUser("role")}>
+                          <option value="editor">Can edit</option>
+                          <option value="viewer">View only</option>
+                        </select>
+                      </label>
+                      <button className="primary-button" type="submit" disabled={isPasswordUserSubmitting || !passwordUserValues.email?.trim() || !passwordUserValues.password}>
+                        <UserPlus size={17} />
+                        Create account
+                      </button>
+                    </form>
+                    {passwordUserErrors.email?.message || passwordUserErrors.password?.message || passwordUserErrors.role?.message ? (
+                      <p className="expense-form-error">{passwordUserErrors.email?.message || passwordUserErrors.password?.message || passwordUserErrors.role?.message}</p>
+                    ) : null}
+                  </div>
+                )}
+              </section>
+            ) : (
+              <p className="dialog-note">{status === "loading" ? "Loading people..." : "Only the trip owner can invite people."}</p>
+            )}
           </div>
         ) : (
           <div className="people-tab-panel" role="tabpanel" aria-label="Travelers">
@@ -5095,7 +6597,7 @@ function SharingModal({
               <div className="sharing-section-title">
                 <div>
                   <strong>Travelers</strong>
-                  <small>These names are used for votes and split expenses.</small>
+                  <small>These names are used for reactions and split expenses.</small>
                 </div>
               </div>
               <div className="traveler-card-grid">
@@ -5153,55 +6655,39 @@ function SharingModal({
   );
 }
 
-function PromoteIdeaModal({ promotion, days, onDayChange, onCancel, onContinue }) {
-  const tagAssets = useTagAssets();
-  const selectedDay = days.find((day) => day.id === promotion.dayId) ?? days[0];
-
+function EditScheduleModal({ payload, days = [], ideas = [], travelers = [], mapsProfile = MAPS_PROFILES.japan, resolvingTarget, onResolvePlace, onCancel, onSave, onAddIdea, onMoveToIdeas, onDelete }) {
+  const defaultValues = getScheduleFormDefaultValues(payload.item, { dayId: payload.dayId, days });
   return (
-    <div className="dialog-backdrop" role="presentation">
-      <div className="dialog promote-dialog" role="dialog" aria-modal="true" aria-label="Add idea as activity">
-        <DialogHeader title="Add as activity" onClose={onCancel} />
-        <div className="promote-summary">
-          <TagIcon src={getCategoryConfigForAssets(promotion.idea.category, tagAssets).asset} size="chip" />
-          <div>
-            <strong>{promotion.idea.title}</strong>
-            <span>{promotion.idea.city || "Japan"}</span>
-          </div>
-        </div>
-        <label className="editor-field">
-          Choose day
-          <select value={selectedDay?.id ?? ""} onChange={(event) => onDayChange(event.target.value)}>
-            {days.map((day) => (
-              <option value={day.id} key={day.id}>
-                Day {day.dayNumber} - {formatShortDate(day.date)} - {day.city}
-              </option>
-            ))}
-          </select>
-        </label>
-        <p className="dialog-note">Next you can set the exact time, duration, map, cost, and notes.</p>
-        <div className="dialog-actions">
-          <button className="ghost-button" type="button" onClick={onCancel}>
-            Cancel
-          </button>
-          <button className="primary-button" type="button" onClick={onContinue} disabled={!selectedDay}>
-            Continue
-          </button>
-        </div>
-      </div>
-    </div>
+    <React.Suspense fallback={<FeatureLoading label="activity editor" />}>
+      <LazyValidatedForm schema="schedule" defaultValues={defaultValues}>
+        {(form) => (
+          <EditScheduleModalContent
+            form={form}
+            payload={payload}
+            days={days}
+            ideas={ideas}
+            travelers={travelers}
+            mapsProfile={mapsProfile}
+            resolvingTarget={resolvingTarget}
+            onResolvePlace={onResolvePlace}
+            onCancel={onCancel}
+            onSave={onSave}
+            onAddIdea={onAddIdea}
+            onMoveToIdeas={onMoveToIdeas}
+            onDelete={onDelete}
+          />
+        )}
+      </LazyValidatedForm>
+    </React.Suspense>
   );
 }
 
-function EditScheduleModal({ payload, days = [], ideas = [], travelers = [], mapsProfile = MAPS_PROFILES.japan, resolvingTarget, onResolvePlace, onCancel, onSave, onAddIdea, onMoveToIdeas, onDelete }) {
-  const form = useForm({
-    resolver: zodResolver(SCHEDULE_FORM_SCHEMA),
-    defaultValues: getScheduleFormDefaultValues(payload.item, { dayId: payload.dayId, days })
-  });
+function EditScheduleModalContent({ form, payload, days, ideas, travelers, mapsProfile, resolvingTarget, onResolvePlace, onCancel, onSave, onAddIdea, onMoveToIdeas, onDelete }) {
   const { getValues, handleSubmit, register, setValue, watch } = form;
   const values = watch();
   const [entryMode, setEntryMode] = useState("new");
-  const [pickerTab, setPickerTab] = useState("All");
   const [pickerCategory, setPickerCategory] = useState("All");
+  const [pickerSearchQuery, setPickerSearchQuery] = useState("");
   const [pendingIdeaId, setPendingIdeaId] = useState("");
   const [showCost, setShowCost] = useState(Boolean(payload.item.cost));
   const [costCurrency, setCostCurrency] = useState(() => detectCostCurrency(payload.item.cost));
@@ -5214,7 +6700,10 @@ function EditScheduleModal({ payload, days = [], ideas = [], travelers = [], map
   const isHotelStayMode = values.category === HOTEL_CATEGORY;
   const canPickIdeas = payload.mode === "new";
   const isPickingIdea = canPickIdeas && entryMode === "ideas";
-  const pickerIdeas = useMemo(() => filterIdeas(ideas, pickerTab, pickerCategory), [ideas, pickerTab, pickerCategory]);
+  const pickerIdeas = useMemo(
+    () => filterActivityPickerIdeas(filterIdeas(ideas, "All", pickerCategory), pickerSearchQuery),
+    [ideas, pickerCategory, pickerSearchQuery]
+  );
   const nextDayId = getNextDayId(days, payload.dayId) || payload.dayId;
   const placeAutocomplete = usePlaceAutocomplete({
     query: values.locationInput,
@@ -5223,7 +6712,12 @@ function EditScheduleModal({ payload, days = [], ideas = [], travelers = [], map
     enabled: isLocationActive && !isLocationMapsLink
   });
   const startMinutes = clampMinutes(parseTimeToMinutes(values.start) ?? TIME_GRID_START_MINUTES, TIME_GRID_START_MINUTES, TIME_GRID_END_MINUTES - MIN_SCHEDULE_DURATION_MINUTES);
-  const durationMinutes = clampMinutes(Number(values.duration) || DEFAULT_NEW_BLOCK.duration, MIN_SCHEDULE_DURATION_MINUTES, TIME_GRID_END_MINUTES - startMinutes);
+  const durationMinutes = getClampedTimelineDuration(values.start, values.duration, DEFAULT_NEW_BLOCK.duration);
+
+  function cancelPickerSearch(event) {
+    setPickerSearchQuery("");
+    event.currentTarget.closest("label")?.querySelector("input")?.blur();
+  }
 
   const autoResolve = useAutoResolveMapLink({
     mapLink: values.mapLink,
@@ -5239,6 +6733,15 @@ function EditScheduleModal({ payload, days = [], ideas = [], travelers = [], map
 
   function updateFormValue(name, value, options = {}) {
     setValue(name, value, { shouldDirty: true, ...options });
+  }
+
+  function handleStartTimeChange(start) {
+    const currentDuration = Number(getValues("duration")) || DEFAULT_NEW_BLOCK.duration;
+    const nextDuration = getClampedTimelineDuration(start, currentDuration, DEFAULT_NEW_BLOCK.duration);
+    updateFormValue("start", start);
+    if (nextDuration !== currentDuration) {
+      updateFormValue("duration", nextDuration);
+    }
   }
 
   function handleCostCurrencyChange(event) {
@@ -5339,6 +6842,7 @@ function EditScheduleModal({ payload, days = [], ideas = [], travelers = [], map
     const stayEndDayId = formValues.stayEndDayId || stayStartDayId;
     const checkInTime = formValues.checkInTime || DEFAULT_CHECK_IN_TIME;
     const checkOutTime = formValues.checkOutTime || DEFAULT_CHECK_OUT_TIME;
+    const activityDuration = getClampedTimelineDuration(formValues.start, formValues.duration, DEFAULT_NEW_BLOCK.duration);
 
     onSave({
       ...payload.item,
@@ -5347,7 +6851,7 @@ function EditScheduleModal({ payload, days = [], ideas = [], travelers = [], map
       title: formValues.title?.trim() || (isStay ? "Hotel stay" : "Untitled plan"),
       city: formValues.city?.trim() ?? "",
       start: isStay ? checkInTime : formValues.start,
-      duration: isStay ? DEFAULT_NEW_BLOCK.duration : Number(formValues.duration) || 60,
+      duration: isStay ? DEFAULT_NEW_BLOCK.duration : activityDuration,
       notes: formValues.notes?.trim() ?? "",
       cost: showCost ? formValues.cost?.trim() ?? "" : "",
       link: payload.item.link?.trim() ?? "",
@@ -5377,25 +6881,36 @@ function EditScheduleModal({ payload, days = [], ideas = [], travelers = [], map
         <DialogHeader title={payload.mode === "new" ? "Add activity" : "Edit activity"} onClose={onCancel} />
         <form className="schedule-editor" onSubmit={handleSubmit(handleSave)}>
           {canPickIdeas ? (
-            <div className="activity-modal-tabs" role="tablist" aria-label="Activity entry mode">
-              <button className={entryMode === "new" ? "is-active" : ""} type="button" role="tab" aria-selected={entryMode === "new"} onClick={() => setEntryMode("new")}>
-                New activity
-              </button>
-              <button className={entryMode === "ideas" ? "is-active" : ""} type="button" role="tab" aria-selected={entryMode === "ideas"} onClick={() => setEntryMode("ideas")}>
-                From ideas
-              </button>
+            <div className="activity-modal-controls">
+              <div className="activity-modal-tabs" role="tablist" aria-label="Activity entry mode">
+                <button className={entryMode === "new" ? "is-active" : ""} type="button" role="tab" aria-selected={entryMode === "new"} onClick={() => setEntryMode("new")}>
+                  New activity
+                </button>
+                <button className={entryMode === "ideas" ? "is-active" : ""} type="button" role="tab" aria-selected={entryMode === "ideas"} onClick={() => setEntryMode("ideas")}>
+                  From ideas
+                </button>
+              </div>
+              {isPickingIdea ? (
+                <label className="activity-idea-search">
+                  <span>
+                    <Search size={15} />
+                    <span className="sr-only">Search ideas</span>
+                  </span>
+                  <input type="search" value={pickerSearchQuery} onChange={(event) => setPickerSearchQuery(event.target.value)} placeholder="Search ideas by title or city" />
+                  <button className="activity-idea-search-clear" type="button" aria-label="Cancel idea search" onMouseDown={(event) => event.preventDefault()} onClick={cancelPickerSearch}>
+                    <X size={16} />
+                  </button>
+                </label>
+              ) : null}
             </div>
           ) : null}
 
           {isPickingIdea ? (
             <ActivityIdeaPicker
               ideas={pickerIdeas}
-              allIdeas={ideas}
-              travelers={travelers}
-              activeTab={pickerTab}
+              searchQuery={pickerSearchQuery}
               activeCategory={pickerCategory}
               pendingIdeaId={pendingIdeaId}
-              onTabChange={setPickerTab}
               onCategoryChange={setPickerCategory}
               onPickIdea={handleIdeaPick}
             />
@@ -5446,7 +6961,7 @@ function EditScheduleModal({ payload, days = [], ideas = [], travelers = [], map
           {isLocationActive && placeAutocomplete.status !== "idle" ? (
             <div className="place-autocomplete-panel">
               {placeAutocomplete.status === "loading" ? <span className="place-autocomplete-status">Searching places...</span> : null}
-              {placeAutocomplete.status === "error" ? <span className="place-autocomplete-status is-error">Could not load suggestions.</span> : null}
+              {placeAutocomplete.status === "error" ? <span className="place-autocomplete-status is-error">{placeAutocomplete.errorMessage || "Could not load suggestions."}</span> : null}
               {placeAutocomplete.suggestions.map((suggestion) => (
                 <button className="place-autocomplete-option" type="button" key={suggestion.placeId} onMouseDown={(event) => event.preventDefault()} onClick={() => handlePlaceSuggestionSelect(suggestion)}>
                   <MapPin size={15} />
@@ -5462,7 +6977,7 @@ function EditScheduleModal({ payload, days = [], ideas = [], travelers = [], map
           ) : null}
           {(autoResolve.status === "pending" || autoResolve.status === "resolving" || autoResolve.status === "ready" || autoResolve.status === "error") ? (
             <div className="editor-inline-status">
-              <AutoResolveStatus status={autoResolve.status} place={values.place} onRetry={autoResolve.retry} />
+              <AutoResolveStatus status={autoResolve.status} place={values.place} errorMessage={autoResolve.errorMessage} onRetry={autoResolve.retry} />
             </div>
           ) : null}
           {mapPreview ? <MapPreview preview={mapPreview} /> : null}
@@ -5509,19 +7024,21 @@ function EditScheduleModal({ payload, days = [], ideas = [], travelers = [], map
             </div>
           ) : (
             <div className="editor-core-grid">
-              <TimeSelectControl value={values.start} onChange={(start) => updateFormValue("start", start)} />
-              <StepperControl
-                label="Duration"
-                value={formatDuration(durationMinutes)}
-                detail={`${durationMinutes} min`}
-                decreaseLabel="Decrease duration by 15 minutes"
-                increaseLabel="Increase duration by 15 minutes"
-                decreaseDisabled={durationMinutes <= MIN_SCHEDULE_DURATION_MINUTES}
-                increaseDisabled={durationMinutes >= Math.max(MIN_SCHEDULE_DURATION_MINUTES, TIME_GRID_END_MINUTES - startMinutes)}
-                onDecrease={() => adjustDuration(-RESIZE_STEP_MINUTES)}
-                onIncrease={() => adjustDuration(RESIZE_STEP_MINUTES)}
-              />
-              <label className="editor-field">
+              <div className="editor-timing-row">
+                <TimeSelectControl value={values.start} onChange={handleStartTimeChange} />
+                <StepperControl
+                  label="Duration"
+                  value={formatDuration(durationMinutes)}
+                  detail={`${durationMinutes} min`}
+                  decreaseLabel="Decrease duration by 15 minutes"
+                  increaseLabel="Increase duration by 15 minutes"
+                  decreaseDisabled={durationMinutes <= MIN_SCHEDULE_DURATION_MINUTES}
+                  increaseDisabled={durationMinutes >= Math.max(MIN_SCHEDULE_DURATION_MINUTES, TIME_GRID_END_MINUTES - startMinutes)}
+                  onDecrease={() => adjustDuration(-RESIZE_STEP_MINUTES)}
+                  onIncrease={() => adjustDuration(RESIZE_STEP_MINUTES)}
+                />
+              </div>
+              <label className="editor-field activity-category-field">
                 Category
                 <select value={values.category || DEFAULT_NEW_BLOCK.category} onChange={handleCategoryChange}>
                   {CATEGORIES.map((category) => (
@@ -5531,7 +7048,7 @@ function EditScheduleModal({ payload, days = [], ideas = [], travelers = [], map
               </label>
               <label className="editor-field activity-area-field">
                 Area
-                <input {...register("city")} placeholder="Kyoto, Shibuya, hotel area..." />
+                <input {...register("city")} placeholder="City, neighborhood, or area" />
               </label>
               <label className="editor-field activity-status-field">
                 Status
@@ -5562,9 +7079,6 @@ function EditScheduleModal({ payload, days = [], ideas = [], travelers = [], map
                 Delete
               </button>
             ) : null}
-            <button className="ghost-button" type="button" onClick={onCancel}>
-              Cancel
-            </button>
             {isPickingIdea ? null : (
               <button className="primary-button" type="submit">
                 Save
@@ -5620,35 +7134,43 @@ function createPlacesSessionToken() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function getErrorMessage(error, fallback) {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
 function usePlaceAutocomplete({ query, sessionToken, mapsProfile = MAPS_PROFILES.japan, enabled }) {
-  const [state, setState] = useState({ status: "idle", suggestions: [] });
+  const [state, setState] = useState({ status: "idle", suggestions: [], errorMessage: "" });
   const requestIdRef = useRef(0);
 
   useEffect(() => {
     const trimmedQuery = String(query ?? "").trim();
     if (!enabled || trimmedQuery.length < 2) {
-      setState({ status: "idle", suggestions: [] });
+      setState({ status: "idle", suggestions: [], errorMessage: "" });
       return undefined;
     }
 
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
-    setState((current) => ({ ...current, status: "loading" }));
+    setState((current) => ({ ...current, status: "loading", errorMessage: "" }));
 
     const timer = window.setTimeout(async () => {
       try {
-        const result = await autocompletePlace({
+        const result = await autocompletePlaceCached({
           query: trimmedQuery,
           sessionToken,
           regionCodes: mapsProfile.regionCodes,
           languageCode: mapsProfile.languageCode
         });
         if (requestIdRef.current === requestId) {
-          setState({ status: "ready", suggestions: result.suggestions ?? [] });
+          setState({ status: "ready", suggestions: result.suggestions ?? [], errorMessage: "" });
         }
-      } catch {
+      } catch (error) {
         if (requestIdRef.current === requestId) {
-          setState({ status: "error", suggestions: [] });
+          setState({
+            status: "error",
+            suggestions: [],
+            errorMessage: getErrorMessage(error, "Could not load suggestions.")
+          });
         }
       }
     }, 350);
@@ -5673,20 +7195,12 @@ function TimeSelectControl({ label = "Start time", value, onChange }) {
             </option>
           ))}
         </select>
+        <span className="time-select-chevron" aria-hidden="true">
+          <ChevronDown size={17} />
+        </span>
       </div>
     </div>
   );
-}
-
-function getStartTimeOptions(selectedValue = "") {
-  const options = [];
-  for (let minutes = TIME_GRID_START_MINUTES; minutes <= TIME_GRID_END_MINUTES - MIN_SCHEDULE_DURATION_MINUTES; minutes += RESIZE_STEP_MINUTES) {
-    options.push(minutesToTimeInput(minutes));
-  }
-  if (selectedValue && !options.includes(selectedValue)) {
-    return [...options, selectedValue].sort((first, second) => (parseTimeToMinutes(first) ?? 0) - (parseTimeToMinutes(second) ?? 0));
-  }
-  return options;
 }
 
 function StepperControl({ label, value, detail, decreaseLabel, increaseLabel, decreaseDisabled, increaseDisabled, onDecrease, onIncrease }) {
@@ -5756,7 +7270,7 @@ function PlaceSummary({ place, fallback = "No place resolved yet" }) {
   );
 }
 
-function AutoResolveStatus({ status, place, onRetry }) {
+function AutoResolveStatus({ status, place, errorMessage, onRetry }) {
   if (status === "pending" || status === "resolving") {
     return <span className="resolve-status-pill is-working">Resolving...</span>;
   }
@@ -5767,9 +7281,12 @@ function AutoResolveStatus({ status, place, onRetry }) {
 
   if (status === "error") {
     return (
-      <button className="ghost-button compact-action resolve-retry-button" type="button" onClick={onRetry}>
-        Retry
-      </button>
+      <span className="resolve-status-error">
+        <button className="ghost-button compact-action resolve-retry-button" type="button" onClick={onRetry}>
+          Retry
+        </button>
+        {errorMessage ? <small>{errorMessage}</small> : null}
+      </span>
     );
   }
 
@@ -5778,7 +7295,9 @@ function AutoResolveStatus({ status, place, onRetry }) {
 
 function useAutoResolveMapLink({ mapLink, isResolving, onResolve }) {
   const [status, setStatus] = useState("idle");
+  const [errorMessage, setErrorMessage] = useState("");
   const lastResolvedLinkRef = useRef("");
+  const failedLinkRef = useRef("");
   const resolveRef = useRef(onResolve);
 
   useEffect(() => {
@@ -5788,7 +7307,15 @@ function useAutoResolveMapLink({ mapLink, isResolving, onResolve }) {
   useEffect(() => {
     const normalizedLink = normalizeGoogleMapsUrlInput(mapLink);
     if (!normalizedLink || !isGoogleMapsLink(normalizedLink)) {
+      failedLinkRef.current = "";
+      lastResolvedLinkRef.current = "";
       setStatus("idle");
+      setErrorMessage("");
+      return undefined;
+    }
+
+    if (failedLinkRef.current === normalizedLink) {
+      setStatus("error");
       return undefined;
     }
 
@@ -5796,15 +7323,25 @@ function useAutoResolveMapLink({ mapLink, isResolving, onResolve }) {
       return undefined;
     }
 
+    setErrorMessage("");
     setStatus("pending");
     const timer = window.setTimeout(async () => {
       lastResolvedLinkRef.current = normalizedLink;
       setStatus("resolving");
-      const place = await resolveRef.current({ silent: true });
-      if (place) {
-        setStatus("ready");
-      } else {
-        lastResolvedLinkRef.current = "";
+      try {
+        const place = await resolveRef.current({ silent: true, throwOnError: true });
+        if (place) {
+          failedLinkRef.current = "";
+          setErrorMessage("");
+          setStatus("ready");
+        } else {
+          failedLinkRef.current = normalizedLink;
+          setErrorMessage("Could not resolve this Google Maps link.");
+          setStatus("error");
+        }
+      } catch (error) {
+        failedLinkRef.current = normalizedLink;
+        setErrorMessage(getErrorMessage(error, "Could not resolve this Google Maps link."));
         setStatus("error");
       }
     }, 700);
@@ -5819,25 +7356,53 @@ function useAutoResolveMapLink({ mapLink, isResolving, onResolve }) {
       return;
     }
 
+    failedLinkRef.current = "";
     lastResolvedLinkRef.current = normalizedLink;
+    setErrorMessage("");
     setStatus("resolving");
-    const place = await resolveRef.current({ silent: false });
-    if (place) {
-      setStatus("ready");
-    } else {
-      lastResolvedLinkRef.current = "";
+    try {
+      const place = await resolveRef.current({ silent: false, throwOnError: true });
+      if (place) {
+        setErrorMessage("");
+        setStatus("ready");
+      } else {
+        failedLinkRef.current = normalizedLink;
+        setErrorMessage("Could not resolve this Google Maps link.");
+        setStatus("error");
+      }
+    } catch (error) {
+      failedLinkRef.current = normalizedLink;
+      setErrorMessage(getErrorMessage(error, "Could not resolve this Google Maps link."));
       setStatus("error");
     }
   }
 
-  return { status, retry };
+  return { status, errorMessage, retry };
 }
 
 function EditIdeaModal({ idea, mapsProfile = MAPS_PROFILES.japan, resolvingTarget, onResolvePlace, onCancel, onSave, onDelete }) {
-  const form = useForm({
-    resolver: zodResolver(IDEA_FORM_SCHEMA),
-    defaultValues: getIdeaFormDefaultValues(idea)
-  });
+  const defaultValues = getIdeaFormDefaultValues(idea);
+  return (
+    <React.Suspense fallback={<FeatureLoading label="idea editor" />}>
+      <LazyValidatedForm schema="idea" defaultValues={defaultValues}>
+        {(form) => (
+          <EditIdeaModalContent
+            form={form}
+            idea={idea}
+            mapsProfile={mapsProfile}
+            resolvingTarget={resolvingTarget}
+            onResolvePlace={onResolvePlace}
+            onCancel={onCancel}
+            onSave={onSave}
+            onDelete={onDelete}
+          />
+        )}
+      </LazyValidatedForm>
+    </React.Suspense>
+  );
+}
+
+function EditIdeaModalContent({ form, idea, mapsProfile, resolvingTarget, onResolvePlace, onCancel, onSave, onDelete }) {
   const { getValues, handleSubmit, register, setValue, watch } = form;
   const values = watch();
   const [showCost, setShowCost] = useState(Boolean(idea.cost));
@@ -5995,7 +7560,7 @@ function EditIdeaModal({ idea, mapsProfile = MAPS_PROFILES.japan, resolvingTarge
           {isLocationActive && placeAutocomplete.status !== "idle" ? (
             <div className="place-autocomplete-panel">
               {placeAutocomplete.status === "loading" ? <span className="place-autocomplete-status">Searching places...</span> : null}
-              {placeAutocomplete.status === "error" ? <span className="place-autocomplete-status is-error">Could not load suggestions.</span> : null}
+              {placeAutocomplete.status === "error" ? <span className="place-autocomplete-status is-error">{placeAutocomplete.errorMessage || "Could not load suggestions."}</span> : null}
               {placeAutocomplete.suggestions.map((suggestion) => (
                 <button className="place-autocomplete-option" type="button" key={suggestion.placeId} onMouseDown={(event) => event.preventDefault()} onClick={() => handlePlaceSuggestionSelect(suggestion)}>
                   <MapPin size={15} />
@@ -6011,12 +7576,12 @@ function EditIdeaModal({ idea, mapsProfile = MAPS_PROFILES.japan, resolvingTarge
           ) : null}
           {(autoResolve.status === "pending" || autoResolve.status === "resolving" || autoResolve.status === "ready" || autoResolve.status === "error") ? (
             <div className="editor-inline-status">
-              <AutoResolveStatus status={autoResolve.status} place={values.place} onRetry={autoResolve.retry} />
+              <AutoResolveStatus status={autoResolve.status} place={values.place} errorMessage={autoResolve.errorMessage} onRetry={autoResolve.retry} />
             </div>
           ) : null}
           {mapPreview ? <MapPreview preview={mapPreview} /> : null}
           <div className="idea-core-grid">
-            <label className="editor-field">
+            <label className="editor-field idea-category-field">
               Category
               <select {...register("category")}>
                 {CATEGORIES.map((category) => (
@@ -6024,11 +7589,11 @@ function EditIdeaModal({ idea, mapsProfile = MAPS_PROFILES.japan, resolvingTarge
                 ))}
               </select>
             </label>
-            <label className="editor-field">
+            <label className="editor-field idea-area-field">
               Area
-              <input {...register("city")} placeholder="Kyoto, Shibuya, hotel area..." />
+              <input {...register("city")} placeholder="City, neighborhood, or area" />
             </label>
-            <label className="editor-field">
+            <label className="editor-field idea-status-field">
               Status
               <select {...register("status")}>
                 {STATUSES.map((status) => (
@@ -6048,9 +7613,6 @@ function EditIdeaModal({ idea, mapsProfile = MAPS_PROFILES.japan, resolvingTarge
                 Delete
               </button>
             ) : null}
-            <button className="ghost-button" type="button" onClick={onCancel}>
-              Cancel
-            </button>
             <button className="primary-button" type="submit">
               Save
             </button>
@@ -6076,9 +7638,63 @@ function getIdeaFormDefaultValues(idea) {
     link: draft.link ?? "",
     mapLink: draft.mapLink ?? "",
     place: draft.place ?? null,
+    reactions: normalizeIdeaReactions(draft),
     votes: draft.votes ?? {},
     _mode: draft._mode
   };
+}
+
+function normalizeReaction(value) {
+  const reaction = String(value ?? "").trim().toLowerCase();
+  const normalizedReaction = LEGACY_REACTION_VALUES[reaction] ?? reaction;
+  return REACTION_ORDER.includes(normalizedReaction) ? normalizedReaction : "";
+}
+
+function normalizeIdeaReactions(idea, travelers = []) {
+  const source = idea?.reactions ?? idea?.votes ?? {};
+  const normalized = {};
+
+  Object.entries(source).forEach(([traveler, reaction]) => {
+    normalized[traveler] = normalizeReaction(reaction);
+  });
+
+  travelers.forEach((traveler) => {
+    if (!(traveler in normalized)) {
+      normalized[traveler] = "";
+    }
+  });
+
+  return normalized;
+}
+
+function getIdeaReaction(idea, traveler) {
+  return normalizeReaction((idea?.reactions ?? idea?.votes ?? {})[traveler]);
+}
+
+function getIdeaReactionSummary(idea) {
+  const source = normalizeIdeaReactions(idea);
+  const counts = Object.values(source).reduce((summary, reaction) => {
+    const normalizedReaction = normalizeReaction(reaction);
+    if (normalizedReaction) {
+      summary[normalizedReaction] = (summary[normalizedReaction] ?? 0) + 1;
+    }
+    return summary;
+  }, {});
+
+  return REACTION_OPTIONS
+    .map((reaction) => ({
+      ...reaction,
+      count: counts[reaction.value] ?? 0
+    }))
+    .filter((reaction) => reaction.count > 0);
+}
+
+function getReactionLabel(reaction, { emptyLabel = REACTION_LABELS[""] } = {}) {
+  return reaction ? REACTION_LABELS[reaction] : emptyLabel;
+}
+
+function getReactionEmoji(reaction) {
+  return REACTION_EMOJIS[reaction] ?? REACTION_EMOJIS[""];
 }
 
 function getIdeaResolveDraft(values) {
@@ -6091,24 +7707,44 @@ function getIdeaResolveDraft(values) {
 }
 
 function EditDayModal({ day, canDelete, mapsProfile = MAPS_PROFILES.japan, resolvingTarget, onResolveBase, onCancel, onSave, onDelete }) {
+  const defaultValues = {
+    ...day,
+    label: day.label ?? "",
+    locationInput: day.basePlace?.name || day.city || "",
+    city: day.city ?? "",
+    notes: day.notes ?? "",
+    baseMapLink: day.baseMapLink ?? "",
+    basePlace: day.basePlace ?? null
+  };
+  return (
+    <React.Suspense fallback={<FeatureLoading label="day editor" />}>
+      <LazyValidatedForm schema="day" defaultValues={defaultValues}>
+        {(form) => (
+          <EditDayModalContent
+            form={form}
+            day={day}
+            canDelete={canDelete}
+            mapsProfile={mapsProfile}
+            resolvingTarget={resolvingTarget}
+            onResolveBase={onResolveBase}
+            onCancel={onCancel}
+            onSave={onSave}
+            onDelete={onDelete}
+          />
+        )}
+      </LazyValidatedForm>
+    </React.Suspense>
+  );
+}
+
+function EditDayModalContent({ form, day, canDelete, mapsProfile, resolvingTarget, onResolveBase, onCancel, onSave, onDelete }) {
   const {
     getValues,
     handleSubmit: submitDayForm,
     register,
     setValue,
     watch
-  } = useForm({
-    resolver: zodResolver(DAY_FORM_SCHEMA),
-    defaultValues: {
-      ...day,
-      label: day.label ?? "",
-      locationInput: day.basePlace?.name || day.city || "",
-      city: day.city ?? "",
-      notes: day.notes ?? "",
-      baseMapLink: day.baseMapLink ?? "",
-      basePlace: day.basePlace ?? null
-    }
-  });
+  } = form;
   const values = watch();
   const [placeSessionToken, setPlaceSessionToken] = useState(() => createPlacesSessionToken());
   const [isLocationActive, setIsLocationActive] = useState(false);
@@ -6225,7 +7861,7 @@ function EditDayModal({ day, canDelete, mapsProfile = MAPS_PROFILES.japan, resol
           {isLocationActive && placeAutocomplete.status !== "idle" ? (
             <div className="span-two place-autocomplete-panel">
               {placeAutocomplete.status === "loading" ? <span className="place-autocomplete-status">Searching places...</span> : null}
-              {placeAutocomplete.status === "error" ? <span className="place-autocomplete-status is-error">Could not load suggestions.</span> : null}
+              {placeAutocomplete.status === "error" ? <span className="place-autocomplete-status is-error">{placeAutocomplete.errorMessage || "Could not load suggestions."}</span> : null}
               {placeAutocomplete.suggestions.map((suggestion) => (
                 <button className="place-autocomplete-option" type="button" key={suggestion.placeId} onMouseDown={(event) => event.preventDefault()} onClick={() => handleDayPlaceSuggestionSelect(suggestion)}>
                   <MapPin size={15} />
@@ -6241,7 +7877,7 @@ function EditDayModal({ day, canDelete, mapsProfile = MAPS_PROFILES.japan, resol
           ) : null}
           {(autoResolve.status === "pending" || autoResolve.status === "resolving" || autoResolve.status === "ready" || autoResolve.status === "error") ? (
             <div className="span-two editor-inline-status">
-              <AutoResolveStatus status={autoResolve.status} place={values.basePlace} onRetry={autoResolve.retry} />
+              <AutoResolveStatus status={autoResolve.status} place={values.basePlace} errorMessage={autoResolve.errorMessage} onRetry={autoResolve.retry} />
             </div>
           ) : null}
           {mapPreview ? (
@@ -6258,9 +7894,6 @@ function EditDayModal({ day, canDelete, mapsProfile = MAPS_PROFILES.japan, resol
               <Trash2 size={17} />
               Remove Day
             </button>
-            <button className="ghost-button" type="button" onClick={onCancel}>
-              Cancel
-            </button>
             <button className="primary-button" type="submit">
               Save Day
             </button>
@@ -6275,7 +7908,7 @@ function DialogHeader({ title, onClose }) {
   return (
     <div className="dialog-header">
       <h2>{title}</h2>
-      <button className="icon-button" type="button" aria-label="Close dialog" onClick={onClose}>
+      <button className="icon-button" type="button" aria-label="Close dialog" data-dialog-close onClick={onClose}>
         <X size={18} />
       </button>
     </div>
@@ -6428,267 +8061,257 @@ function hasPlaceCoordinates(place) {
   return Number.isFinite(Number(place?.latitude)) && Number.isFinite(Number(place?.longitude));
 }
 
-function buildDayCheck(day, days) {
-  const scheduledStops = buildDayCheckStops(day);
-  const routeStops = buildDayRouteStops(day, scheduledStops);
-  const status = getDayCheckStatus(scheduledStops, routeStops);
-  const suggestion = buildDayCheckSuggestion(day, days, scheduledStops, status);
-  const currentRouteTitles = scheduledStops.map((stop) => stop.title);
-  const betterRouteTitles = suggestion?.canApply
-    ? scheduledStops.filter((stop) => stop.item.id !== suggestion.itemId).map((stop) => stop.title)
-    : currentRouteTitles;
-  const coachCopy = getDayCheckCoachCopy(status, suggestion, scheduledStops);
-  const sourceDayBadge = formatDayCheckBadgeLabel(day);
+function buildPlannerMapItems(trip, days = [], tagAssets = DEFAULT_TAG_ASSETS) {
+  const mappedItems = [];
+  const needsLocationItems = [];
+  const allItems = [];
+  const scheduledSignatures = new Set();
+  const scheduledStaySignatures = new Set();
 
-  return {
-    ...status,
-    suggestion,
-    stops: scheduledStops,
-    currentRouteTitles,
-    betterRouteTitles,
-    movedStopLabel: suggestion?.canApply ? `Move ${suggestion.itemTitle} to ${suggestion.targetDayLabel}` : "",
-    movedStopTitle: suggestion?.canApply ? suggestion.itemTitle : "",
-    sourceDayBadge,
-    targetDayBadge: suggestion?.targetDayBadge ?? "",
-    coachTitle: coachCopy.title,
-    coachSummary: coachCopy.summary
-  };
-}
-
-function buildDayCheckStops(day) {
-  return sortActivitySchedule(day?.schedule ?? [])
-    .filter((item) => item.status !== "Skipped" && hasPlaceCoordinates(item.place))
-    .map((item) => ({
-      id: item.id,
-      title: item.title || item.place?.name || "Untitled stop",
-      city: item.city || day.city,
-      item,
-      latitude: Number(item.place.latitude),
-      longitude: Number(item.place.longitude)
-    }));
-}
-
-function getDayCheckCoachCopy(status, suggestion, scheduledStops) {
-  if (suggestion?.canApply) {
-    return {
-      title: "Move one stop to make this day easier",
-      summary: "This day has too much backtracking. Moving one stop will make the route easier to follow."
-    };
-  }
-
-  if (["spread", "heavy"].includes(status.statusTone)) {
-    return {
-      title: "This day has some travel",
-      summary: "There is not one obvious stop to move. Review the order before locking the day."
-    };
-  }
-
-  if (status.statusTone === "some") {
-    return {
-      title: "This day has a few moves",
-      summary: "It should still be manageable. Keep an eye on the order and pacing."
-    };
-  }
-
-  if (scheduledStops.length === 0) {
-    return {
-      title: "Add mapped places to check the day",
-      summary: "Once activities have Google Maps places, the planner can flag hard travel days."
-    };
-  }
-
-  return {
-    title: "This day looks easy to follow",
-    summary: "No obvious travel problem stands out."
-  };
-}
-
-function buildDayRouteStops(day, scheduledStops) {
-  const baseStop = hasPlaceCoordinates(day?.basePlace)
-    ? {
-        id: `${day.id}:base`,
-        title: day.basePlace.name || day.basePlace.formattedAddress || "Hotel",
-        city: day.city,
-        latitude: Number(day.basePlace.latitude),
-        longitude: Number(day.basePlace.longitude)
+  days.forEach((day) => {
+    sortSchedule(day.schedule ?? []).forEach((item) => {
+      if (!isMapEligiblePlannerItem(item)) {
+        return;
       }
-    : null;
 
-  if (baseStop && scheduledStops.length) {
-    return [baseStop, ...scheduledStops, { ...baseStop, id: `${baseStop.id}:return` }];
-  }
+      const mapItem = buildPlannerMapItem({
+        source: "scheduled",
+        sourceItem: item,
+        day,
+        days,
+        tagAssets
+      });
 
-  return scheduledStops;
+      const signature = getMapDuplicateSignature(mapItem);
+      if (isStayItem(item)) {
+        const staySignature = signature || getMapStayDuplicateSignature(item);
+        if (staySignature && scheduledStaySignatures.has(staySignature)) {
+          return;
+        }
+        if (staySignature) {
+          scheduledStaySignatures.add(staySignature);
+        }
+      }
+
+      addMapItem(mapItem, { mappedItems, needsLocationItems, allItems });
+
+      if (signature) {
+        scheduledSignatures.add(signature);
+      }
+    });
+  });
+
+  (trip.ideas ?? []).forEach((idea) => {
+    if (!isMapEligiblePlannerItem(idea)) {
+      return;
+    }
+
+    const mapItem = buildPlannerMapItem({
+      source: "idea",
+      sourceItem: idea,
+      tagAssets
+    });
+    const signature = getMapDuplicateSignature(mapItem);
+    if (signature && scheduledSignatures.has(signature)) {
+      return;
+    }
+    addMapItem(mapItem, { mappedItems, needsLocationItems, allItems });
+  });
+
+  return { mappedItems, needsLocationItems, allItems };
 }
 
-function getDayCheckStatus(scheduledStops, routeStops) {
-  if (scheduledStops.length === 0) {
-    return {
-      statusTone: "good",
-      statusLabel: "Looks good",
-      summary: "Add resolved places to this day when you want a travel check.",
-      why: "There are no mapped activities to compare yet."
-    };
+function addMapItem(item, groups) {
+  groups.allItems.push(item);
+  if (item.isMapped) {
+    groups.mappedItems.push(item);
+  } else {
+    groups.needsLocationItems.push(item);
   }
+}
 
-  if (scheduledStops.length === 1) {
-    return {
-      statusTone: "good",
-      statusLabel: "Looks good",
-      summary: "This day has one mapped stop, so it should be simple to follow.",
-      why: "There is only one activity to route from your base."
-    };
-  }
-
-  const legDistances = [];
-  for (let index = 0; index < routeStops.length - 1; index += 1) {
-    legDistances.push(distanceKm(routeStops[index], routeStops[index + 1]));
-  }
-
-  const totalKm = legDistances.reduce((sum, distance) => sum + distance, 0);
-  const maxLegKm = legDistances.reduce((max, distance) => Math.max(max, distance), 0);
-  const stopCount = scheduledStops.length;
-  const distanceSummary = `The mapped stops create about ${formatDistanceKm(totalKm)} of straight-line movement, with the longest jump around ${formatDistanceKm(maxLegKm)}.`;
-
-  if (totalKm >= 30 || maxLegKm >= 10 || stopCount >= 5) {
-    return {
-      statusTone: "heavy",
-      statusLabel: "Too spread out",
-      summary: "This day may feel travel-heavy. Consider moving one stop before committing.",
-      why: distanceSummary
-    };
-  }
-
-  if (totalKm >= 20 || maxLegKm >= 7 || stopCount >= 4) {
-    return {
-      statusTone: "spread",
-      statusLabel: "Spread out",
-      summary: "This day is possible, but it crosses enough distance that you should review the order.",
-      why: distanceSummary
-    };
-  }
-
-  if (totalKm >= 10 || maxLegKm >= 4 || stopCount >= 3) {
-    return {
-      statusTone: "some",
-      statusLabel: "Some travel",
-      summary: "This day has a few moves, but it should still be manageable.",
-      why: distanceSummary
-    };
-  }
+function buildPlannerMapItem({ source, sourceItem, day = null, days = [], tagAssets = DEFAULT_TAG_ASSETS }) {
+  const config = getCategoryConfigForAssets(sourceItem.category, tagAssets);
+  const place = sourceItem.place ?? null;
+  const isMapped = hasPlaceCoordinates(place);
+  const city = sourceItem.city || day?.city || inferCityFromAddress(place?.formattedAddress) || "";
+  const dayIds = day ? getMapItemDayIds(sourceItem, day.id, days) : [];
 
   return {
-    statusTone: "good",
-    statusLabel: "Looks good",
-    summary: "This day looks manageable.",
-    why: distanceSummary
+    id: `${source}:${sourceItem.id}`,
+    source,
+    sourceLabel: source === "idea" ? "Idea" : "Scheduled",
+    sourceItem,
+    dayId: day?.id ?? "",
+    dayIds,
+    dayLabel: day ? formatMapItemDayLabel(sourceItem, day, days) : "",
+    title: sourceItem.title || place?.name || "Untitled place",
+    category: sourceItem.category || "Open Time",
+    categoryClass: config.className,
+    iconSrc: config.asset,
+    city,
+    status: sourceItem.status || "Proposed",
+    mapLink: normalizeGoogleMapsUrlInput(sourceItem.mapLink),
+    place,
+    isMapped,
+    googleMapsUrl: place?.googleMapsUri || normalizeGoogleMapsUrlInput(sourceItem.mapLink) || "",
+    position: isMapped ? { lat: Number(place.latitude), lng: Number(place.longitude) } : null
   };
 }
 
-function buildDayCheckSuggestion(day, days, stops, status) {
-  if (!["spread", "heavy"].includes(status.statusTone) || stops.length < 3) {
-    return null;
+function isMapEligiblePlannerItem(item) {
+  if (!item || item.status === "Skipped") {
+    return false;
+  }
+  return !EXCLUDED_MAP_CATEGORIES.has(item.category);
+}
+
+function getMapItemDayIds(item, sourceDayId, days = []) {
+  if (!sourceDayId) {
+    return [];
+  }
+  if (!isStayItem(item)) {
+    return [sourceDayId];
   }
 
-  const outlier = findOutlierStop(stops);
-  if (!outlier || outlier.averageDistanceKm < 8.5) {
-    return {
-      canApply: false,
-      copy: "This day has some distance, but there is not one obvious stop to move. Review the order before finalizing the day."
-    };
+  const { startIndex, endIndex } = getStayDayIndexes(item, sourceDayId, days);
+  const stayDays = days.slice(startIndex, endIndex + 1).filter((day) => day?.id);
+  return stayDays.length ? stayDays.map((day) => day.id) : [sourceDayId];
+}
+
+function formatMapItemDayLabel(item, sourceDay, days = []) {
+  if (!isStayItem(item)) {
+    return formatMapDayLabel(sourceDay);
   }
 
-  const targetDay = findCompatibleTargetDay(days, day, outlier.stop);
-  const keepTitles = stops.filter((stop) => stop.id !== outlier.stop.id).map((stop) => stop.title);
-  const targetDayLabel = targetDay ? formatDayCheckDayLabel(targetDay) : "";
-  const placeDirection = describeRelativeArea(outlier.stop, keepTitles.length ? stops.find((stop) => stop.id !== outlier.stop.id) : null);
-
-  if (!targetDay) {
-    return {
-      canApply: false,
-      copy: `Consider moving ${outlier.stop.title} to a lighter ${outlier.stop.city || day.city || "nearby"} day. It appears ${placeDirection} from the rest of this plan, and there is not a clear existing day with enough open time.`
-    };
+  const { startIndex, endIndex } = getStayDayIndexes(item, sourceDay.id, days);
+  const startDay = days[startIndex] ?? sourceDay;
+  const endDay = days[endIndex] ?? startDay;
+  if (!startDay || startDay.id === endDay.id) {
+    return formatMapDayLabel(sourceDay);
   }
 
-  const keepCopy = keepTitles.length
-    ? `Keep ${formatTitleList(keepTitles)} together on ${formatDayCheckDayLabel(day)}.`
-    : `Keep the rest of ${formatDayCheckDayLabel(day)} unchanged.`;
+  const cityLabel = startDay.city && startDay.city === endDay.city ? ` · ${startDay.city}` : "";
+  return `Day ${startDay.dayNumber} - Day ${endDay.dayNumber}${cityLabel}`;
+}
+
+function getMapDuplicateSignature(item) {
+  const normalizedTitle = normalizeMapSignaturePart(item.title);
+  const placeKey = item.place?.id
+    || (hasPlaceCoordinates(item.place) ? `${Number(item.place.latitude).toFixed(5)},${Number(item.place.longitude).toFixed(5)}` : "")
+    || normalizeMapSignaturePart(item.mapLink)
+    || normalizeMapSignaturePart(item.place?.name)
+    || normalizeMapSignaturePart(item.place?.formattedAddress);
+
+  if (!normalizedTitle || !placeKey) {
+    return "";
+  }
+
+  return `${normalizedTitle}:${placeKey}`;
+}
+
+function getMapStayDuplicateSignature(item) {
+  return normalizeMapSignaturePart(item.id)
+    || [item.title, item.city].map(normalizeMapSignaturePart).filter(Boolean).join(":");
+}
+
+function normalizeMapSignaturePart(value) {
+  return String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function filterPlannerMapItems(mapOverview, filters, searchQuery = "") {
+  const normalizedSearch = String(searchQuery ?? "").trim().toLowerCase();
+  const filteredItems = mapOverview.allItems.filter((item) => {
+    if (filters.source === "Ideas" && item.source !== "idea") {
+      return false;
+    }
+    if (filters.source === "Scheduled" && item.source !== "scheduled") {
+      return false;
+    }
+    if (filters.dayId !== "All" && !(item.dayIds ?? [item.dayId]).includes(filters.dayId)) {
+      return false;
+    }
+    if (filters.city !== "All" && item.city !== filters.city) {
+      return false;
+    }
+    if (filters.category !== "All" && item.category !== filters.category) {
+      return false;
+    }
+    if (filters.status !== "All" && item.status !== filters.status) {
+      return false;
+    }
+    if (filters.location === "Mapped" && !item.isMapped) {
+      return false;
+    }
+    if (filters.location === "Needs location" && item.isMapped) {
+      return false;
+    }
+    if (normalizedSearch && !mapItemMatchesSearch(item, normalizedSearch)) {
+      return false;
+    }
+    return true;
+  });
 
   return {
-    canApply: true,
-    sourceDayId: day.id,
-    targetDayId: targetDay.id,
-    itemId: outlier.stop.item.id,
-    itemTitle: outlier.stop.title,
-    keepTitles,
-    targetDayLabel,
-    targetDayBadge: formatDayCheckBadgeLabel(targetDay),
-    copy: `Move ${outlier.stop.title} to ${targetDayLabel}. ${keepCopy}`,
-    reviewCopy: `This will move ${outlier.stop.title} into the first open slot on ${targetDayLabel}. No other stops change.`
+    allItems: filteredItems,
+    mappedItems: filteredItems.filter((item) => item.isMapped),
+    needsLocationItems: filteredItems.filter((item) => !item.isMapped)
   };
 }
 
-function findOutlierStop(stops) {
-  let candidate = null;
+function mapItemMatchesSearch(item, normalizedSearch) {
+  const searchableText = [
+    item.title,
+    item.city,
+    item.category,
+    item.status,
+    item.sourceLabel,
+    item.dayLabel,
+    item.place?.name,
+    item.place?.formattedAddress
+  ].filter(Boolean).join(" ").toLowerCase();
+  return searchableText.includes(normalizedSearch);
+}
 
-  for (const stop of stops) {
-    const others = stops.filter((other) => other.id !== stop.id);
-    if (!others.length) {
-      continue;
-    }
-    const averageDistanceKm = others.reduce((sum, other) => sum + distanceKm(stop, other), 0) / others.length;
-    if (!candidate || averageDistanceKm > candidate.averageDistanceKm) {
-      candidate = { stop, averageDistanceKm };
-    }
+function buildActiveMapFilterChips(filters, { dayOptions = [], cityOptions = [] } = {}) {
+  const chips = [];
+  if (filters.source !== MAP_DEFAULT_FILTERS.source) {
+    chips.push({ key: "source", label: `Source: ${filters.source}` });
   }
-
-  return candidate;
-}
-
-function findCompatibleTargetDay(days, sourceDay, stop) {
-  const stopRegionTokens = getRegionTokens([stop.city, stop.item?.place?.formattedAddress, stop.item?.place?.name].join(" "));
-  const sourceRegionTokens = getRegionTokens([sourceDay.city, sourceDay.basePlace?.formattedAddress, sourceDay.basePlace?.name].join(" "));
-  const acceptableTokens = new Set([...stopRegionTokens, ...sourceRegionTokens]);
-  const duration = Math.max(MIN_SCHEDULE_DURATION_MINUTES, Number(stop.item?.duration) || MIN_SCHEDULE_DURATION_MINUTES);
-
-  const candidates = (days ?? [])
-    .filter((day) => day.id !== sourceDay.id)
-    .map((day) => {
-      const dayTokens = getRegionTokens([day.city, day.basePlace?.formattedAddress, day.basePlace?.name].join(" "));
-      const isCompatible = !acceptableTokens.size || dayTokens.some((token) => acceptableTokens.has(token));
-      const start = findAvailableScheduleStart(day.schedule ?? [], duration);
-      const stats = getDayStats(day);
-      return { day, isCompatible, start, plannedMinutes: stats.plannedMinutes };
-    })
-    .filter((candidate) => candidate.isCompatible && candidate.start)
-    .sort((first, second) => first.plannedMinutes - second.plannedMinutes || (first.day.dayNumber ?? 0) - (second.day.dayNumber ?? 0));
-
-  return candidates[0]?.day ?? null;
-}
-
-function findAvailableScheduleStart(schedule, durationMinutes) {
-  const duration = Math.max(MIN_SCHEDULE_DURATION_MINUTES, Number(durationMinutes) || MIN_SCHEDULE_DURATION_MINUTES);
-  for (let minutes = TIME_GRID_START_MINUTES; minutes <= TIME_GRID_END_MINUTES - duration; minutes += TIME_GRID_STEP_MINUTES) {
-    const start = minutesToTimeInput(minutes);
-    if (isScheduleSlotAvailable(schedule, null, start, duration)) {
-      return start;
-    }
+  if (filters.dayId !== MAP_DEFAULT_FILTERS.dayId) {
+    chips.push({ key: "day", label: `Day: ${findMapOptionLabel(dayOptions, filters.dayId, filters.dayId)}` });
   }
-  return "";
+  if (filters.city !== MAP_DEFAULT_FILTERS.city) {
+    chips.push({ key: "city", label: `City: ${findMapOptionLabel(cityOptions, filters.city, filters.city)}` });
+  }
+  if (filters.category !== MAP_DEFAULT_FILTERS.category) {
+    chips.push({ key: "category", label: `Category: ${filters.category}` });
+  }
+  if (filters.status !== MAP_DEFAULT_FILTERS.status) {
+    chips.push({ key: "status", label: `Status: ${filters.status}` });
+  }
+  if (filters.location !== MAP_DEFAULT_FILTERS.location) {
+    chips.push({ key: "location", label: `Location: ${filters.location}` });
+  }
+  return chips;
 }
 
-function distanceKm(first, second) {
-  const earthRadiusKm = 6371;
-  const lat1 = toRadians(Number(first.latitude));
-  const lat2 = toRadians(Number(second.latitude));
-  const deltaLat = toRadians(Number(second.latitude) - Number(first.latitude));
-  const deltaLon = toRadians(Number(second.longitude) - Number(first.longitude));
-  const a = (Math.sin(deltaLat / 2) ** 2) + (Math.cos(lat1) * Math.cos(lat2) * (Math.sin(deltaLon / 2) ** 2));
-  return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+function findMapOptionLabel(options, value, fallback) {
+  return options.find((option) => String(option.value) === String(value))?.label ?? fallback;
 }
 
-function toRadians(value) {
-  return (value * Math.PI) / 180;
+function buildMapCityOptions(items) {
+  return [...new Set(items.map((item) => item.city).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b))
+    .map((city) => ({ value: city, label: city }));
+}
+
+function formatMapDayLabel(day) {
+  return `Day ${day.dayNumber}${day.city ? ` · ${day.city}` : ""}`;
+}
+
+function getMapFallbackCenter(mapsProfile) {
+  return MAP_PROFILE_CENTERS[mapsProfile?.id] ?? MAP_PROFILE_CENTERS.global;
 }
 
 function formatDistanceKm(value) {
@@ -6696,72 +8319,6 @@ function formatDistanceKm(value) {
     return "0 km";
   }
   return value >= 10 ? `${Math.round(value)} km` : `${value.toFixed(1)} km`;
-}
-
-function formatTitleList(titles) {
-  if (titles.length <= 2) {
-    return titles.join(" and ");
-  }
-  return `${titles.slice(0, -1).join(", ")}, and ${titles[titles.length - 1]}`;
-}
-
-function formatDayCheckDayLabel(day) {
-  return `${day.label || `Day ${day.dayNumber}`}${day.city ? ` (${day.city})` : ""}`;
-}
-
-function formatDayCheckBadgeLabel(day) {
-  if (!day) {
-    return "";
-  }
-  return Number.isFinite(Number(day.dayNumber)) ? `Day ${day.dayNumber}` : day.label || "Day";
-}
-
-function getRegionTokens(value) {
-  const text = String(value ?? "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "");
-  const regions = [
-    "mexico city",
-    "ciudad de mexico",
-    "cdmx",
-    "condesa",
-    "roma norte",
-    "roma sur",
-    "polanco",
-    "coyoacan",
-    "chapultepec",
-    "centro historico",
-    "tokyo",
-    "kyoto",
-    "osaka",
-    "nara",
-    "hakone",
-    "yokohama",
-    "kobe",
-    "hiroshima",
-    "nagoya",
-    "sapporo",
-    "fukuoka",
-    "kamakura",
-    "uji",
-    "himeji",
-    "kanazawa",
-    "nikko",
-    "arashiyama"
-  ];
-  return regions.filter((region) => text.includes(region));
-}
-
-function describeRelativeArea(stop, comparisonStop) {
-  if (!comparisonStop) {
-    return "away from the rest of the day";
-  }
-  const latDelta = Number(stop.latitude) - Number(comparisonStop.latitude);
-  const lonDelta = Number(stop.longitude) - Number(comparisonStop.longitude);
-  const vertical = Math.abs(latDelta) > 0.025 ? (latDelta > 0 ? "north" : "south") : "";
-  const horizontal = Math.abs(lonDelta) > 0.025 ? (lonDelta > 0 ? "east" : "west") : "";
-  return [vertical, horizontal].filter(Boolean).join("/") || "away from the rest of the day";
 }
 
 function enrichDraftWithPlace(draft, place, { emptyTitleFallback = "" } = {}) {
@@ -6987,31 +8544,6 @@ function formatRoleLabel(role) {
   return labels[role] ?? "Can edit";
 }
 
-function formatMoneyList(currencySummaries = []) {
-  const totals = currencySummaries
-    .filter((summary) => summary.total > 0)
-    .map((summary) => formatMoney(summary.total, summary.currency));
-  return totals.length ? totals.join(" + ") : formatMoney(0, "JPY");
-}
-
-function formatSignedMoney(amountMinor, currency) {
-  if (amountMinor === 0) {
-    return formatMoney(0, currency);
-  }
-  const prefix = amountMinor > 0 ? "+" : "-";
-  return `${prefix}${formatMoney(Math.abs(amountMinor), currency)}`;
-}
-
-function formatSourceType(sourceType) {
-  if (sourceType === "schedule_item") {
-    return "Activity";
-  }
-  if (sourceType === "idea") {
-    return "Idea";
-  }
-  return "Manual";
-}
-
 function getDayStats(day) {
   if (!day) {
     return { plannedMinutes: 0, openMinutes: DAY_MINUTES };
@@ -7063,7 +8595,7 @@ function createScheduleItemFromIdea(idea, targetDay, days, preferredStart) {
     ? DEFAULT_CHECK_IN_TIME
     : preferredStartIsAvailable
       ? preferredStart
-      : findAvailableScheduleStart(targetDay.schedule, duration) || preferredStart || suggestNextStart(targetDay.schedule);
+      : findAvailableScheduleStart(targetDay.schedule, duration) || preferredStart || suggestNextTimelineStart(targetDay.schedule, duration);
 
   return {
     ...DEFAULT_NEW_BLOCK,
@@ -7110,7 +8642,7 @@ function createIdeaFromScheduleItem(item, sourceDay, days, travelers = []) {
     link: item.link ?? "",
     mapLink: item.mapLink ?? "",
     place: item.place ?? null,
-    votes: Object.fromEntries(travelers.map((name) => [name, ""]))
+    reactions: Object.fromEntries(travelers.map((name) => [name, ""]))
   };
 }
 
@@ -7212,20 +8744,6 @@ function dateSortValue(dateValue) {
   return Number.isNaN(time) ? Number.MAX_SAFE_INTEGER : time;
 }
 
-function addDateDays(dateValue, days) {
-  const date = new Date(`${dateValue}T12:00:00`);
-  date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
-function buildTimeGridSlots() {
-  const slots = [];
-  for (let minutes = TIME_GRID_START_MINUTES; minutes <= TIME_GRID_END_MINUTES; minutes += TIME_GRID_STEP_MINUTES) {
-    slots.push({ minutes });
-  }
-  return slots;
-}
-
 function getTimeGridEventLayout(item, rowHeight = DAY_TIME_GRID_ROW_HEIGHT) {
   return getTimeGridBlockLayout(item.start, Number(item.duration) || TIME_GRID_STEP_MINUTES, rowHeight);
 }
@@ -7304,12 +8822,12 @@ function getScheduleEventDetail(item, dayCity = "", tagAssets = DEFAULT_TAG_ASSE
   };
 }
 
-function getDropStartFromPointer(clientY, column, rowHeight = DAY_TIME_GRID_ROW_HEIGHT) {
+function getDropStartFromPointer(clientY, column, durationMinutes, rowHeight = DAY_TIME_GRID_ROW_HEIGHT) {
   const rect = column.getBoundingClientRect();
   const offsetY = Math.min(Math.max(clientY - rect.top, 0), rect.height);
   const rawMinutes = TIME_GRID_START_MINUTES + (offsetY / rowHeight) * TIME_GRID_STEP_MINUTES;
-  const snappedMinutes = Math.round(rawMinutes / TIME_GRID_STEP_MINUTES) * TIME_GRID_STEP_MINUTES;
-  const clampedMinutes = Math.min(Math.max(snappedMinutes, TIME_GRID_START_MINUTES), TIME_GRID_END_MINUTES);
+  const snappedMinutes = snapTimelineMinutes(rawMinutes);
+  const clampedMinutes = clampMinutes(snappedMinutes, TIME_GRID_START_MINUTES, getLatestTimelineStart(durationMinutes));
   return minutesToTimeInput(clampedMinutes);
 }
 
@@ -7317,8 +8835,8 @@ function getCellStartFromPointer(clientY, column, rowHeight = DAY_TIME_GRID_ROW_
   const rect = column.getBoundingClientRect();
   const offsetY = Math.min(Math.max(clientY - rect.top, 0), Math.max(0, rect.height - 1));
   const rawMinutes = TIME_GRID_START_MINUTES + (offsetY / rowHeight) * TIME_GRID_STEP_MINUTES;
-  const snappedMinutes = Math.floor(rawMinutes / TIME_GRID_STEP_MINUTES) * TIME_GRID_STEP_MINUTES;
-  const clampedMinutes = Math.min(Math.max(snappedMinutes, TIME_GRID_START_MINUTES), TIME_GRID_END_MINUTES - TIME_GRID_STEP_MINUTES);
+  const snappedMinutes = snapTimelineMinutes(rawMinutes, "floor");
+  const clampedMinutes = clampMinutes(snappedMinutes, TIME_GRID_START_MINUTES, getLatestTimelineStart(TIME_GRID_STEP_MINUTES));
   return minutesToTimeInput(clampedMinutes);
 }
 
@@ -7327,25 +8845,21 @@ function getResizeDeltaMinutes(clientY, startY, rowHeight = DAY_TIME_GRID_ROW_HE
   return Math.round(rawMinutes / RESIZE_STEP_MINUTES) * RESIZE_STEP_MINUTES;
 }
 
-function minutesToTimeInput(totalMinutes) {
-  const hours = String(Math.floor(totalMinutes / 60)).padStart(2, "0");
-  const minutes = String(totalMinutes % 60).padStart(2, "0");
-  return `${hours}:${minutes}`;
-}
-
-function clampMinutes(value, min, max) {
-  return Math.min(Math.max(value, min), max);
+function findAvailableScheduleStart(schedule, durationMinutes) {
+  const duration = Math.max(MIN_SCHEDULE_DURATION_MINUTES, Number(durationMinutes) || MIN_SCHEDULE_DURATION_MINUTES);
+  for (let minutes = TIME_GRID_START_MINUTES; minutes <= TIME_GRID_END_MINUTES - duration; minutes += RESIZE_STEP_MINUTES) {
+    const start = minutesToTimeInput(minutes);
+    if (isScheduleSlotAvailable(schedule, null, start, duration)) {
+      return start;
+    }
+  }
+  return "";
 }
 
 function isScheduleSlotAvailable(schedule, movingItemId, targetStart, durationMinutes) {
   const start = parseTimeToMinutes(targetStart);
   const duration = Math.max(MIN_SCHEDULE_DURATION_MINUTES, Number(durationMinutes) || MIN_SCHEDULE_DURATION_MINUTES);
-  if (start === null) {
-    return false;
-  }
-
-  const end = start + duration;
-  if (start < TIME_GRID_START_MINUTES || end > TIME_GRID_END_MINUTES) {
+  if (start === null || !isWithinTimelineRange(targetStart, duration)) {
     return false;
   }
 
@@ -7360,8 +8874,8 @@ function isScheduleSlotAvailable(schedule, movingItemId, targetStart, durationMi
     if (itemStart === null) {
       return true;
     }
-    const itemEnd = itemStart + (Number(item.duration) || TIME_GRID_STEP_MINUTES);
-    return end <= itemStart || start >= itemEnd;
+    const itemDuration = Number(item.duration) || TIME_GRID_STEP_MINUTES;
+    return !timeRangesOverlap(start, duration, itemStart, itemDuration);
   });
 }
 
@@ -7370,17 +8884,6 @@ function areDropPreviewsEqual(first, second) {
     return first === second;
   }
   return first.dayId === second.dayId && first.start === second.start && first.duration === second.duration && first.isAvailable === second.isAvailable;
-}
-
-function parseTimeToMinutes(time) {
-  if (!time) {
-    return null;
-  }
-  const [hours, minutes] = time.split(":").map(Number);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
-    return null;
-  }
-  return hours * 60 + minutes;
 }
 
 function formatTripRange(days) {
@@ -7399,8 +8902,20 @@ function filterIdeas(ideas, tab, category) {
       tab === "Ideas" ||
       (tab === "Booked" && idea.status === "Booked") ||
       (tab === "Maybe" && idea.status === "Maybe");
-    const matchesCategory = category === "All" || idea.category === category;
+    const matchesCategory = !category || category === "All" || idea.category === category;
     return matchesTab && matchesCategory;
+  });
+}
+
+function filterActivityPickerIdeas(ideas, query) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return ideas;
+  }
+
+  return ideas.filter((idea) => {
+    const searchableText = `${idea.title ?? ""} ${idea.city ?? ""}`.toLowerCase();
+    return searchableText.includes(normalizedQuery);
   });
 }
 
@@ -7473,6 +8988,49 @@ function clearPendingInviteToken() {
   }
 }
 
+function getLastSelectedTripStorageKey(profileId) {
+  const normalizedProfileId = String(profileId ?? "").trim();
+  return normalizedProfileId ? `${LAST_SELECTED_TRIP_KEY}:${normalizedProfileId}` : "";
+}
+
+function readLastSelectedTripId(storageKey) {
+  if (typeof window === "undefined" || !storageKey) {
+    return null;
+  }
+
+  try {
+    const value = Number(window.localStorage.getItem(storageKey));
+    return value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastSelectedTripId(storageKey, tripId) {
+  const nextTripId = Number(tripId);
+  if (typeof window === "undefined" || !storageKey || !nextTripId) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(storageKey, String(nextTripId));
+  } catch {
+    // This only controls refresh convenience; picking a trip still works.
+  }
+}
+
+function clearLastSelectedTripId(storageKey) {
+  if (typeof window === "undefined" || !storageKey) {
+    return;
+  }
+
+  try {
+    window.localStorage.removeItem(storageKey);
+  } catch {
+    // Safe to ignore.
+  }
+}
+
 function getSeenExpensesStorageKey(profileId, tripId) {
   if (!tripId) {
     return "";
@@ -7521,6 +9079,9 @@ function detectCostCurrency(value, fallbackCurrency = "JPY") {
   }
 
   const rawValue = String(value ?? "").trim().toUpperCase();
+  if (rawValue.includes("MXN") || rawValue.includes("MX$")) {
+    return "MXN";
+  }
   if (rawValue.includes("USD") || rawValue.includes("$")) {
     return "USD";
   }
@@ -7541,7 +9102,8 @@ function getCostAmountInputValue(value) {
     return rawValue;
   }
   return rawValue
-    .replace(/\b(USD|JPY|YEN)\b/gi, "")
+    .replace(/MX\$/gi, "")
+    .replace(/\b(MXN|USD|JPY|YEN)\b/gi, "")
     .replace(/[¥￥$]/g, "")
     .trim();
 }
@@ -7555,39 +9117,6 @@ function formatCostForCurrency(value, currency = "JPY") {
     return amountValue;
   }
   return `${normalizeCostCurrency(currency)} ${amountValue}`;
-}
-
-function readBudgetCurrencySettings() {
-  if (typeof window === "undefined") {
-    return { view: "native", jpyPerUsd: DEFAULT_JPY_PER_USD };
-  }
-
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(BUDGET_CURRENCY_SETTINGS_KEY) ?? "{}");
-    const view = BUDGET_CURRENCY_VIEWS.some((option) => option.value === parsed.view) ? parsed.view : "native";
-    return {
-      view,
-      jpyPerUsd: normalizeExchangeRate(parsed.jpyPerUsd ?? DEFAULT_JPY_PER_USD)
-    };
-  } catch {
-    return { view: "native", jpyPerUsd: DEFAULT_JPY_PER_USD };
-  }
-}
-
-function writeBudgetCurrencySettings(settings) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  try {
-    const view = BUDGET_CURRENCY_VIEWS.some((option) => option.value === settings.view) ? settings.view : "native";
-    window.localStorage.setItem(BUDGET_CURRENCY_SETTINGS_KEY, JSON.stringify({
-      view,
-      jpyPerUsd: normalizeExchangeRate(settings.jpyPerUsd)
-    }));
-  } catch {
-    // Currency display preferences are local-only and safe to lose.
-  }
 }
 
 function formatShortDate(dateValue) {
@@ -7632,22 +9161,6 @@ function formatDuration(minutes) {
     return `${remaining}m`;
   }
   return remaining ? `${hours}h ${remaining}m` : `${hours}h`;
-}
-
-function suggestNextStart(schedule) {
-  if (!schedule.length) {
-    return "10:00";
-  }
-
-  const latestEnd = schedule.reduce((max, item) => {
-    const [hours, minutes] = item.start.split(":").map(Number);
-    return Math.max(max, hours * 60 + minutes + Number(item.duration || 60));
-  }, 10 * 60);
-
-  const rounded = Math.min(22 * 60, Math.ceil(latestEnd / 30) * 30);
-  const hours = String(Math.floor(rounded / 60)).padStart(2, "0");
-  const minutes = String(rounded % 60).padStart(2, "0");
-  return `${hours}:${minutes}`;
 }
 
 export default App;

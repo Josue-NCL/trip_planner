@@ -2,6 +2,8 @@
 
 Use this file as context when planning new features for the Japan 2026 Travel Scheduler. It is written for ChatGPT or another planning assistant, not as implementation instructions for production code.
 
+> Current-state note: read `docs/APP_STATE.md` first. It is the canonical July 11, 2026 checkout handoff and covers newer Map, Expenses, reactions, routing, generic-trip, and Travel Companion work that this older planning brief does not fully describe.
+
 ## Quick Copy/Paste Prompt
 
 ```text

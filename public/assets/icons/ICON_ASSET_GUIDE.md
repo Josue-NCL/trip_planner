@@ -34,6 +34,24 @@ The generic files preserve the same semantic names and suggested uses as the def
 | `tag-shopping.png` | Shops, souvenirs, markets | Shopping category chips, saved shopping ideas |
 | `tag-open-time.png` | Flexible free time, buffers, unscheduled windows | Open-time category chips, rest windows, day buffers |
 
+## Generic Idea Category Expansion
+
+These generic-only additions extend the category set for trips that need more activity types than food, shopping, and culture. All are destination-neutral and use the same 256px transparent PNG format.
+
+| File | Meaning | Suggested Uses |
+| --- | --- | --- |
+| `tag-nature-generic.png` | Nature and outdoors | Hikes, parks, scenic trails, gardens, and outdoor stops |
+| `tag-nightlife-generic.png` | Nightlife | Evening events, cocktails, clubs, live music, and late-night plans |
+| `tag-wellness-generic.png` | Wellness | Spas, yoga, pools, massage, rest, and self-care activities |
+| `tag-beauty-generic.png` | Beauty | Salons, skincare, makeup appointments, and beauty shopping |
+| `tag-entertainment-generic.png` | Entertainment | Shows, cinema, concerts, theater, and ticketed events |
+| `tag-family-generic.png` | Family | Kid-friendly ideas, family activities, and group outings |
+| `tag-adventure-generic.png` | Sport and adventure | Sports, active excursions, guided adventures, and challenge activities |
+| `tag-sightseeing-generic.png` | Sightseeing | Landmark visits, photo stops, walking tours, and must-see places |
+| `tag-market-generic.png` | Markets | Produce markets, flea markets, local stalls, and browsing excursions |
+| `tag-water-generic.png` | Beach and water | Beaches, swimming, boat outings, waterfronts, and water activities |
+| `tag-work-generic.png` | Work-friendly | Coworking, remote-work spots, reliable Wi-Fi, and work breaks |
+
 ## Trip Tool Icons
 
 | File | Meaning | Suggested Uses |
@@ -55,6 +73,18 @@ The generic files preserve the same semantic names and suggested uses as the def
 | `tag-skipped.png` | Skipped or removed from plan | Skipped status chip, archived ideas, lower-priority options |
 | `tag-priority.png` | Priority or important | Must-do flags, high-priority itinerary items |
 | `tag-flexible.png` | Flexible timing or movable plan | Flexible blocks, movable schedule items, buffer-friendly activities |
+
+## Generic Navbar Icons
+
+These are generic travel-planner icons intended for primary navigation. They are more compact than the tag icons and avoid Japan-specific motifs.
+
+| File | Meaning | Suggested Uses |
+| --- | --- | --- |
+| `nav-trip-generic.png` | Overall trip plan | Bottom nav or sidebar item for the full trip view |
+| `nav-day-generic.png` | Day-by-day schedule | Bottom nav or sidebar item for day view |
+| `nav-ideas-generic.png` | Saved ideas and brainstorming | Bottom nav or sidebar item for ideas |
+| `nav-map-generic.png` | Map and places | Bottom nav or sidebar item for map view |
+| `nav-expenses-generic.png` | Expenses and receipts | Bottom nav or sidebar item for expense tracking |
 
 ## Implementation Notes For Codex
 

@@ -1,15 +1,17 @@
-import { JPY, USD, dinero, toSnapshot } from "dinero.js";
+import { JPY, MXN, USD, dinero, toSnapshot } from "dinero.js";
 
-export const SUPPORTED_CURRENCIES = ["JPY", "USD"];
+export const SUPPORTED_CURRENCIES = ["JPY", "USD", "MXN"];
 
 const CURRENCY_DEFINITIONS = {
   JPY,
-  USD
+  USD,
+  MXN
 };
 
 const CURRENCY_FRACTION_DIGITS = {
   JPY: 0,
-  USD: 2
+  USD: 2,
+  MXN: 2
 };
 
 const VAGUE_COST_PATTERN = /\b(tbd|unknown|varies|variable|included|free|n\/a|none)\b/i;
@@ -27,13 +29,14 @@ export function formatMoney(amountMinor, currency = "JPY") {
   const fractionDigits = CURRENCY_FRACTION_DIGITS[normalizedCurrency];
   const majorAmount = snapshot.amount / (10 ** fractionDigits);
 
-  return new Intl.NumberFormat("en-US", {
+  const formatted = new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: normalizedCurrency,
     currencyDisplay: "narrowSymbol",
     minimumFractionDigits: fractionDigits,
     maximumFractionDigits: fractionDigits
   }).format(majorAmount);
+  return normalizedCurrency === "MXN" ? formatted.replace(/(^|-)\$/, "$1MX$") : formatted;
 }
 
 export function formatMajorAmount(amountMinor, currency = "JPY") {
@@ -96,8 +99,15 @@ export function normalizeCurrency(currency = "JPY") {
   return SUPPORTED_CURRENCIES.includes(normalized) ? normalized : "JPY";
 }
 
+export function getCurrencyFractionDigits(currency = "JPY") {
+  return CURRENCY_FRACTION_DIGITS[normalizeCurrency(currency)];
+}
+
 function detectCurrency(value, defaultCurrency) {
   const upperValue = value.toUpperCase();
+  if (upperValue.includes("MXN") || upperValue.includes("MX$")) {
+    return "MXN";
+  }
   if (upperValue.includes("USD") || value.includes("$")) {
     return "USD";
   }

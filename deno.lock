@@ -1,0 +1,30 @@
+{
+  "version": "5",
+  "remote": {
+    "https://esm.sh/@supabase/supabase-js@2.47.10": "8352fea62a92ad2fef32bc6a1aa529a5d2da0c939819f41767dd1480f0f30d70"
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@hookform/resolvers@^5.4.0",
+        "npm:@supabase/supabase-js@^2.108.2",
+        "npm:@vis.gl/react-google-maps@^1.9.0",
+        "npm:@vitejs/plugin-react@^4.3.4",
+        "npm:date-fns@^4.4.0",
+        "npm:dinero.js@^2.0.2",
+        "npm:driver.js@^1.6.0",
+        "npm:fuse.js@^7.4.2",
+        "npm:lucide-react@0.468",
+        "npm:react-dom@19",
+        "npm:react-hook-form@^7.80.0",
+        "npm:react-is@^19.2.7",
+        "npm:react@19",
+        "npm:recharts@^3.9.1",
+        "npm:sonner@^2.0.7",
+        "npm:typescript@^5.6.3",
+        "npm:vite@^6.0.7",
+        "npm:zod@^4.4.3"
+      ]
+    }
+  }
+}

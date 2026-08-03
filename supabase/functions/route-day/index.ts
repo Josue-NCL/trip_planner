@@ -123,9 +123,9 @@ Deno.serve(async (request) => {
       return errorResponse(validationError, 400, "invalid_request");
     }
 
-    const apiKey = Deno.env.get("GOOGLE_MAPS_SERVER_KEY");
+    const apiKey = getGoogleServerKey();
     if (!apiKey) {
-      return errorResponse("GOOGLE_MAPS_SERVER_KEY is not configured in Supabase secrets.", 500, "missing_google_key");
+      return errorResponse("GOOGLE_PLACES_SERVER_KEY or GOOGLE_MAPS_SERVER_KEY is not configured in Supabase secrets.", 500, "missing_google_key");
     }
     const supabase = createUserSupabaseClient(request);
     const { data: userResult, error: userError } = await supabase.auth.getUser();
@@ -223,6 +223,10 @@ function createUserSupabaseClient(request: Request) {
       }
     }
   });
+}
+
+function getGoogleServerKey() {
+  return Deno.env.get("GOOGLE_PLACES_SERVER_KEY") || Deno.env.get("GOOGLE_MAPS_SERVER_KEY");
 }
 
 async function loadRouteInput(supabase: ReturnType<typeof createClient<any>>, payload: Required<Pick<RouteDayRequest, "tripId" | "dayClientId">> & RouteDayRequest): Promise<RouteInput> {

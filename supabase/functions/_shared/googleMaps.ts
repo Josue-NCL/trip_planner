@@ -8,6 +8,16 @@ export type ResolvedPlace = {
   resolvedAt: string;
 };
 
+export type PlaceSuggestion = {
+  placeId: string;
+  name: string;
+  formattedAddress: string;
+  latitude: number | null;
+  longitude: number | null;
+  googleMapsUri: string;
+  interestIds?: string[];
+};
+
 export type RouteStop = {
   id: string;
   title: string;
@@ -44,9 +54,24 @@ type GooglePlace = {
   googleMapsUri?: string;
 };
 
+type Coordinates = {
+  latitude: number;
+  longitude: number;
+};
+
+type MapsLinkSearchContext = {
+  query: string;
+  locationBias?: Coordinates & {
+    radiusMeters: number;
+  };
+};
+
 const PLACE_FIELD_MASK = "places.id,places.displayName,places.formattedAddress,places.location,places.googleMapsUri";
 const PLACE_DETAILS_FIELD_MASK = "id,displayName,formattedAddress,location,googleMapsUri";
 const AUTOCOMPLETE_DETAILS_FIELD_MASK = "id,formattedAddress,location";
+const GOOGLE_FETCH_TIMEOUT_MS = 8000;
+const MAPS_LINK_EXPAND_TIMEOUT_MS = 5000;
+const MAPS_LINK_LOCATION_BIAS_RADIUS_METERS = 3000;
 const ROUTE_MATRIX_FIELD_MASK = "originIndex,destinationIndex,status,condition,duration,distanceMeters";
 const ROUTE_DETAILS_FIELD_MASK = [
   "routes.duration",
@@ -78,6 +103,7 @@ export async function resolveGooglePlace(input: ResolvePlaceInput): Promise<Reso
   const expandedLink = await expandMapsLink(input.mapLink);
   const candidateUrl = parseUrl(expandedLink ?? input.mapLink);
   const extractedPlaceId = candidateUrl ? extractPlaceId(candidateUrl) : "";
+  const mapsLinkContext = candidateUrl ? getMapsLinkSearchContext(candidateUrl) : null;
 
   if (extractedPlaceId) {
     const place = await fetchPlaceDetails(input.apiKey, extractedPlaceId);
@@ -86,12 +112,15 @@ export async function resolveGooglePlace(input: ResolvePlaceInput): Promise<Reso
     }
   }
 
-  const textQuery = buildTextQuery({ ...input, expandedLink });
+  const textQuery = buildTextQuery({ ...input, expandedLink, mapsLinkContext });
   if (!textQuery) {
     throw new Error("Add a Google Maps link, place name, or city before resolving this place.");
   }
 
-  const places = await textSearchPlaces(input.apiKey, textQuery, input);
+  const places = await textSearchPlaces(input.apiKey, textQuery, {
+    ...input,
+    locationBias: mapsLinkContext?.locationBias
+  });
   const bestPlace = places[0];
   if (!bestPlace) {
     throw new Error("Google Maps could not find a matching place.");
@@ -111,7 +140,7 @@ export async function autocompleteGooglePlaces(input: { apiKey: string; query: s
     requestBody.includedRegionCodes = regionCodes;
   }
 
-  const response = await fetch("https://places.googleapis.com/v1/places:autocomplete", {
+  const response = await fetchWithTimeout("https://places.googleapis.com/v1/places:autocomplete", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -125,7 +154,7 @@ export async function autocompleteGooglePlaces(input: { apiKey: string; query: s
       ].join(",")
     },
     body: JSON.stringify(requestBody)
-  });
+  }, GOOGLE_FETCH_TIMEOUT_MS, "Google Places autocomplete timed out.");
 
   if (!response.ok) {
     throw new Error(await googleErrorMessage(response, "Google Places could not load suggestions."));
@@ -154,6 +183,38 @@ export async function autocompleteGooglePlaces(input: { apiKey: string; query: s
       text: prediction.text?.text ?? prediction.structuredFormat?.mainText?.text ?? "",
       mainText: prediction.structuredFormat?.mainText?.text ?? prediction.text?.text ?? "",
       secondaryText: prediction.structuredFormat?.secondaryText?.text ?? ""
+    }));
+}
+
+export async function searchGooglePlaceSuggestions(input: {
+  apiKey: string;
+  query: string;
+  destination: string;
+  regionCode?: string;
+  languageCode?: string;
+  limit?: number;
+}): Promise<PlaceSuggestion[]> {
+  const query = input.query.trim();
+  const destination = input.destination.trim();
+  const textQuery = query.toLowerCase().includes(destination.toLowerCase())
+    ? query
+    : `${query}, ${destination}`;
+  const places = await textSearchPlaces(input.apiKey, textQuery, {
+    regionCode: input.regionCode,
+    languageCode: input.languageCode
+  });
+  const limit = Math.max(1, Math.min(8, Math.round(Number(input.limit) || 8)));
+
+  return places
+    .filter((place) => place.id && place.displayName?.text)
+    .slice(0, limit)
+    .map((place) => ({
+      placeId: place.id ?? "",
+      name: place.displayName?.text ?? "",
+      formattedAddress: place.formattedAddress ?? "",
+      latitude: finiteNumberOrNull(place.location?.latitude),
+      longitude: finiteNumberOrNull(place.location?.longitude),
+      googleMapsUri: place.googleMapsUri ?? buildGoogleMapsPlaceUrl(place.id ?? "", place.displayName?.text)
     }));
 }
 
@@ -255,12 +316,12 @@ async function fetchPlaceDetails(apiKey: string, placeId: string, options: { ses
     url.searchParams.set("sessionToken", options.sessionToken);
   }
 
-  const response = await fetch(url.href, {
+  const response = await fetchWithTimeout(url.href, {
     headers: {
       "X-Goog-Api-Key": apiKey,
       "X-Goog-FieldMask": options.fieldMask ?? PLACE_DETAILS_FIELD_MASK
     }
-  });
+  }, GOOGLE_FETCH_TIMEOUT_MS, "Google Place details timed out.");
 
   if (!response.ok) {
     return null;
@@ -269,7 +330,7 @@ async function fetchPlaceDetails(apiKey: string, placeId: string, options: { ses
   return await response.json() as GooglePlace;
 }
 
-async function textSearchPlaces(apiKey: string, textQuery: string, options: { regionCode?: string; languageCode?: string } = {}) {
+async function textSearchPlaces(apiKey: string, textQuery: string, options: { regionCode?: string; languageCode?: string; locationBias?: MapsLinkSearchContext["locationBias"] } = {}) {
   const regionCode = options.regionCode === undefined ? "JP" : sanitizeRegionCode(options.regionCode) ?? undefined;
   const requestBody: Record<string, unknown> = {
     textQuery,
@@ -278,8 +339,19 @@ async function textSearchPlaces(apiKey: string, textQuery: string, options: { re
   if (regionCode) {
     requestBody.regionCode = regionCode;
   }
+  if (options.locationBias) {
+    requestBody.locationBias = {
+      circle: {
+        center: {
+          latitude: options.locationBias.latitude,
+          longitude: options.locationBias.longitude
+        },
+        radius: options.locationBias.radiusMeters
+      }
+    };
+  }
 
-  const response = await fetch("https://places.googleapis.com/v1/places:searchText", {
+  const response = await fetchWithTimeout("https://places.googleapis.com/v1/places:searchText", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -287,7 +359,7 @@ async function textSearchPlaces(apiKey: string, textQuery: string, options: { re
       "X-Goog-FieldMask": PLACE_FIELD_MASK
     },
     body: JSON.stringify(requestBody)
-  });
+  }, GOOGLE_FETCH_TIMEOUT_MS, "Google Places text search timed out.");
 
   if (!response.ok) {
     throw new Error(await googleErrorMessage(response, "Google Places could not resolve this place."));
@@ -306,6 +378,25 @@ async function googleErrorMessage(response: Response, fallback: string) {
   }
 }
 
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = GOOGLE_FETCH_TIMEOUT_MS, timeoutMessage = "Google Maps request timed out.") {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(timeoutMessage);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function expandMapsLink(link?: string) {
   const url = parseUrl(link);
   if (!url || !isShortMapsHost(url.hostname)) {
@@ -313,23 +404,32 @@ async function expandMapsLink(link?: string) {
   }
 
   try {
-    const response = await fetch(url.href, { method: "GET", redirect: "follow" });
+    const response = await fetchWithTimeout(url.href, { method: "GET", redirect: "follow" }, MAPS_LINK_EXPAND_TIMEOUT_MS, "Google Maps short link expansion timed out.");
     return response.url || url.href;
   } catch {
     return url.href;
   }
 }
 
-function buildTextQuery(input: ResolvePlaceInput & { expandedLink?: string }) {
+function buildTextQuery(input: ResolvePlaceInput & { expandedLink?: string; mapsLinkContext?: MapsLinkSearchContext | null }) {
   const explicitQuery = input.query?.trim();
   if (explicitQuery) {
     return explicitQuery;
+  }
+
+  if (input.mapsLinkContext?.query) {
+    return input.mapsLinkContext.query;
   }
 
   const expandedUrl = parseUrl(input.expandedLink);
   const urlQuery = expandedUrl ? extractQueryFromUrl(expandedUrl) : "";
   if (urlQuery) {
     return appendCity(urlQuery, input.city, input.countryName);
+  }
+
+  const urlCoordinates = expandedUrl ? extractCoordinatesFromUrl(expandedUrl) : null;
+  if (urlCoordinates) {
+    return `${urlCoordinates.latitude},${urlCoordinates.longitude}`;
   }
 
   const title = input.title?.trim();
@@ -377,12 +477,49 @@ function extractQueryFromUrl(url: URL) {
     return decodeURIComponent(placePathMatch[1].replace(/\+/g, " "));
   }
 
-  const coordinatesMatch = url.href.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),/) || url.href.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
-  if (coordinatesMatch) {
-    return `${coordinatesMatch[1]},${coordinatesMatch[2]}`;
+  return "";
+}
+
+function getMapsLinkSearchContext(url: URL): MapsLinkSearchContext | null {
+  if (!isGoogleMapsUrl(url)) {
+    return null;
   }
 
-  return "";
+  const coordinates = extractCoordinatesFromUrl(url);
+  const query = extractQueryFromUrl(url) || (coordinates ? `${coordinates.latitude},${coordinates.longitude}` : "");
+  if (!query) {
+    return null;
+  }
+
+  return {
+    query,
+    locationBias: coordinates
+      ? {
+          latitude: coordinates.latitude,
+          longitude: coordinates.longitude,
+          radiusMeters: MAPS_LINK_LOCATION_BIAS_RADIUS_METERS
+        }
+      : undefined
+  };
+}
+
+function extractCoordinatesFromUrl(url: URL): Coordinates | null {
+  const coordinateMatch = url.href.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/)
+    || url.href.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),/);
+  if (!coordinateMatch) {
+    return null;
+  }
+
+  const latitude = Number(coordinateMatch[1]);
+  const longitude = Number(coordinateMatch[2]);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return null;
+  }
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+    return null;
+  }
+
+  return { latitude, longitude };
 }
 
 function normalizePlace(place: GooglePlace, options: { displayNameHint?: string; googleMapsUri?: string } = {}): ResolvedPlace {
@@ -395,6 +532,10 @@ function normalizePlace(place: GooglePlace, options: { displayNameHint?: string;
     googleMapsUri: place.googleMapsUri ?? options.googleMapsUri ?? "",
     resolvedAt: new Date().toISOString()
   };
+}
+
+function finiteNumberOrNull(value?: number) {
+  return Number.isFinite(value) ? Number(value) : null;
 }
 
 function buildGoogleMapsPlaceUrl(placeId: string, queryHint = "") {

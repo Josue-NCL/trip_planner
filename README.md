@@ -48,6 +48,7 @@ The Supabase schema is tracked in `supabase/migrations/` and has been applied to
 ## Docs
 
 - `AGENTS.md`: working notes and guardrails for coding agents.
+- `docs/APP_STATE.md`: canonical latest-state handoff, including current-checkout and deployment caveats.
 - `docs/PROJECT_CONTEXT.md`: product shape, data model, and important files.
 - `docs/SUPABASE_TRANSITION.md`: implemented backend plan and schema direction.
 - `docs/DECISIONS.md`: project decisions worth preserving.

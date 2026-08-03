@@ -16,6 +16,8 @@ type ResolvePlaceRequest = {
   query?: string;
   title?: string;
   city?: string;
+  /** Resolve and return place data without changing a persisted record. */
+  persist?: boolean;
 };
 
 Deno.serve(async (request) => {
@@ -29,14 +31,15 @@ Deno.serve(async (request) => {
 
   try {
     const payload = await request.json() as ResolvePlaceRequest;
-    const validationError = validatePayload(payload);
+    const shouldPersist = payload.persist !== false;
+    const validationError = validatePayload(payload, shouldPersist);
     if (validationError) {
       return errorResponse(validationError, 400, "invalid_request");
     }
 
-    const apiKey = Deno.env.get("GOOGLE_MAPS_SERVER_KEY");
+    const apiKey = getGoogleServerKey();
     if (!apiKey) {
-      return errorResponse("GOOGLE_MAPS_SERVER_KEY is not configured in Supabase secrets.", 500, "missing_google_key");
+      return errorResponse("GOOGLE_PLACES_SERVER_KEY or GOOGLE_MAPS_SERVER_KEY is not configured in Supabase secrets.", 500, "missing_google_key");
     }
 
     const supabase = createUserSupabaseClient(request);
@@ -61,12 +64,18 @@ Deno.serve(async (request) => {
       city: payload.city
     });
 
-    await persistPlace(supabase, normalizedPayload as Required<Pick<ResolvePlaceRequest, "tripId" | "targetType" | "targetClientId">> & ResolvePlaceRequest, place);
+    if (shouldPersist) {
+      await persistPlace(supabase, normalizedPayload as Required<Pick<ResolvePlaceRequest, "tripId" | "targetType" | "targetClientId">> & ResolvePlaceRequest, place);
+    }
 
     return jsonResponse({
       status: "ok",
-      targetType: payload.targetType,
-      targetClientId: payload.targetClientId,
+      ...(shouldPersist
+        ? {
+            targetType: payload.targetType,
+            targetClientId: payload.targetClientId
+          }
+        : {}),
       place
     });
   } catch (error) {
@@ -74,14 +83,14 @@ Deno.serve(async (request) => {
   }
 });
 
-function validatePayload(payload: ResolvePlaceRequest) {
-  if (!payload.tripId || !Number.isFinite(Number(payload.tripId))) {
+function validatePayload(payload: ResolvePlaceRequest, shouldPersist: boolean) {
+  if (shouldPersist && (!payload.tripId || !Number.isFinite(Number(payload.tripId)))) {
     return "tripId is required.";
   }
-  if (!payload.targetType || !["idea", "schedule_item", "trip_day_base"].includes(payload.targetType)) {
+  if (shouldPersist && (!payload.targetType || !["idea", "schedule_item", "trip_day_base"].includes(payload.targetType))) {
     return "targetType must be idea, schedule_item, or trip_day_base.";
   }
-  if (!payload.targetClientId?.trim()) {
+  if (shouldPersist && !payload.targetClientId?.trim()) {
     return "targetClientId is required.";
   }
   if (!payload.placeId?.trim() && !payload.mapLink?.trim() && !payload.query?.trim() && !payload.title?.trim() && !payload.city?.trim()) {
@@ -104,6 +113,10 @@ function createUserSupabaseClient(request: Request) {
       }
     }
   });
+}
+
+function getGoogleServerKey() {
+  return Deno.env.get("GOOGLE_PLACES_SERVER_KEY") || Deno.env.get("GOOGLE_MAPS_SERVER_KEY");
 }
 
 function sanitizeRegionCode(regionCode?: string) {

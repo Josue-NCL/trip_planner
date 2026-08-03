@@ -1,20 +1,27 @@
 import { TRIP_VERSION } from "../data/tripData.js";
 
+const REACTION_VALUES = ["", "like", "ok", "interesting", "pass"];
+const LEGACY_REACTION_VALUES = {
+  maybe: "ok",
+  love: "like"
+};
+
 export function mapRowsToTrip({ trip, travelers = [], days = [], scheduleItems = [], ideas = [], votes = [] }) {
   const travelerRows = [...travelers].sort(sortByOrderThenName);
   const travelerNames = travelerRows.map((traveler) => traveler.name);
   const travelerNameById = new Map(travelerRows.map((traveler) => [String(traveler.id), traveler.name]));
-  const votesByIdeaId = new Map();
+  const reactionsByIdeaId = new Map();
 
   votes.forEach((vote) => {
     const travelerName = travelerNameById.get(String(vote.traveler_id));
-    if (!travelerName || !vote.vote) {
+    const reaction = normalizeReaction(vote.vote);
+    if (!travelerName || !reaction) {
       return;
     }
 
-    const ideaVotes = votesByIdeaId.get(String(vote.idea_id)) ?? {};
-    ideaVotes[travelerName] = vote.vote;
-    votesByIdeaId.set(String(vote.idea_id), ideaVotes);
+    const ideaReactions = reactionsByIdeaId.get(String(vote.idea_id)) ?? {};
+    ideaReactions[travelerName] = reaction;
+    reactionsByIdeaId.set(String(vote.idea_id), ideaReactions);
   });
 
   const scheduleByDayId = new Map();
@@ -72,9 +79,9 @@ export function mapRowsToTrip({ trip, travelers = [], days = [], scheduleItems =
       mapLink: idea.map_link,
       place: mapPlaceFromRow(idea),
       imageKey: idea.image_key,
-      votes: {
+      reactions: {
         ...Object.fromEntries(travelerNames.map((name) => [name, ""])),
-        ...(votesByIdeaId.get(String(idea.id)) ?? {})
+        ...(reactionsByIdeaId.get(String(idea.id)) ?? {})
       }
     })),
     updatedAt: trip.updated_at
@@ -144,7 +151,7 @@ export function buildTripRows(tripId, trip) {
     ...mapPlaceToRow(idea.place),
     image_key: idea.imageKey ?? "",
     sort_order: index,
-    votes: idea.votes ?? {}
+    votes: normalizeReactionMap(idea.reactions ?? idea.votes ?? {})
   }));
 
   return {
@@ -158,6 +165,20 @@ export function buildTripRows(tripId, trip) {
     scheduleItems,
     ideas
   };
+}
+
+function normalizeReaction(value) {
+  const reaction = String(value ?? "").trim().toLowerCase();
+  const normalizedReaction = LEGACY_REACTION_VALUES[reaction] ?? reaction;
+  return REACTION_VALUES.includes(normalizedReaction) ? normalizedReaction : "";
+}
+
+function normalizeReactionMap(reactions) {
+  return Object.fromEntries(
+    Object.entries(reactions ?? {})
+      .map(([traveler, reaction]) => [traveler, normalizeReaction(reaction)])
+      .filter(([, reaction]) => reaction)
+  );
 }
 
 function mapPlaceFromRow(row) {

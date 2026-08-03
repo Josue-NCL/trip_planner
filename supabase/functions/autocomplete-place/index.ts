@@ -30,9 +30,9 @@ Deno.serve(async (request) => {
       return jsonResponse({ status: "ok", suggestions: [] });
     }
 
-    const apiKey = Deno.env.get("GOOGLE_MAPS_SERVER_KEY");
+    const apiKey = getGoogleServerKey();
     if (!apiKey) {
-      return errorResponse("GOOGLE_MAPS_SERVER_KEY is not configured in Supabase secrets.", 500, "missing_google_key");
+      return errorResponse("GOOGLE_PLACES_SERVER_KEY or GOOGLE_MAPS_SERVER_KEY is not configured in Supabase secrets.", 500, "missing_google_key");
     }
 
     const supabase = createUserSupabaseClient(request);
@@ -80,6 +80,10 @@ function createUserSupabaseClient(request: Request) {
       }
     }
   });
+}
+
+function getGoogleServerKey() {
+  return Deno.env.get("GOOGLE_PLACES_SERVER_KEY") || Deno.env.get("GOOGLE_MAPS_SERVER_KEY");
 }
 
 function sanitizeRegionCodes(regionCodes?: string[]) {

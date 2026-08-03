@@ -101,6 +101,32 @@ export async function createTripFromPayload(payload, ownerId, ownerName = "") {
   return trip.id;
 }
 
+export async function deleteTrip({ tripId, ownerId, expectedName }) {
+  const normalizedName = String(expectedName ?? "").trim();
+  if (!tripId || !ownerId || !normalizedName) {
+    throw new Error("The trip delete request is missing its safety checks.");
+  }
+
+  const client = requireSupabase();
+  const { data, error } = await client
+    .from("trips")
+    .delete()
+    .eq("id", tripId)
+    .eq("owner_id", ownerId)
+    .eq("name", normalizedName)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+  if (!data?.id) {
+    throw new Error("The trip could not be deleted. Only its owner can delete it.");
+  }
+
+  return data.id;
+}
+
 export async function replaceTripPayload(tripId, payload) {
   const client = requireSupabase();
   const rows = buildTripRows(tripId, payload);
