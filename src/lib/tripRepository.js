@@ -127,15 +127,24 @@ export async function deleteTrip({ tripId, ownerId, expectedName }) {
   return data.id;
 }
 
-export async function replaceTripPayload(tripId, payload) {
+export async function replaceTripPayload(tripId, payload, expectedUpdatedAt = null) {
   const client = requireSupabase();
   const rows = buildTripRows(tripId, payload);
 
-  const { error } = await client.rpc("replace_trip_payload", {
-    target_trip_id: tripId,
-    payload: rows
-  });
+  const rpcName = expectedUpdatedAt ? "replace_trip_payload_guarded" : "replace_trip_payload";
+  const rpcArgs = expectedUpdatedAt
+    ? {
+        target_trip_id: tripId,
+        payload: rows,
+        expected_trip_updated_at: expectedUpdatedAt
+      }
+    : {
+        target_trip_id: tripId,
+        payload: rows
+      };
+  const { data, error } = await client.rpc(rpcName, rpcArgs);
   throwIfError(error);
+  return data;
 }
 
 export function subscribeToTripChanges(tripId, onChange) {

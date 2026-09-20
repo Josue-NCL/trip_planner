@@ -751,6 +751,12 @@ function App() {
   const saveTimerRef = useRef(null);
   const saveInFlightRef = useRef(false);
   const pendingSaveSnapshotRef = useRef(null);
+  const pendingAutoSaveSnapshotRef = useRef(null);
+  const tripUpdatedAtRef = useRef(trip.updatedAt ?? "");
+  const saveGenerationRef = useRef(0);
+  const conflictReloadInFlightRef = useRef(false);
+  const latestTripRef = useRef(trip);
+  latestTripRef.current = trip;
   const realtimeTimerRef = useRef(null);
   const skipNextSaveRef = useRef(false);
   const pendingTripInitialViewRef = useRef(null);
@@ -759,6 +765,10 @@ function App() {
   const openingInviteRef = useRef("");
   const sessionUserId = session?.user?.id ?? "";
   const isPhoneView = useMediaQueryMatch(PHONE_TIMELINE_QUERY);
+
+  useEffect(() => {
+    tripUpdatedAtRef.current = trip.updatedAt ?? "";
+  }, [trip.updatedAt]);
 
   useEffect(() => {
     if (isPhoneView && !hasTripBoardModeChoice) {
@@ -1094,6 +1104,10 @@ function App() {
     }
 
     let isCurrent = true;
+    saveGenerationRef.current += 1;
+    conflictReloadInFlightRef.current = false;
+    pendingAutoSaveSnapshotRef.current = null;
+    window.clearTimeout(saveTimerRef.current);
     setTripLoading(true);
     setTripLoaded(false);
     saveInFlightRef.current = false;
@@ -1138,6 +1152,8 @@ function App() {
 
     return () => {
       isCurrent = false;
+      saveGenerationRef.current += 1;
+      window.clearTimeout(saveTimerRef.current);
     };
   }, [selectedTripId, sessionUserId]);
 
@@ -1239,15 +1255,26 @@ function App() {
       return undefined;
     }
 
+    if (conflictReloadInFlightRef.current) {
+      return undefined;
+    }
+
     window.clearTimeout(saveTimerRef.current);
     setSyncStatus("saving");
     const snapshot = { ...trip, dateRangeLabel };
+    pendingAutoSaveSnapshotRef.current = snapshot;
     saveTimerRef.current = window.setTimeout(() => {
+      if (pendingAutoSaveSnapshotRef.current === snapshot) {
+        pendingAutoSaveSnapshotRef.current = null;
+      }
       queueTripSave(snapshot);
     }, 800);
 
     return () => {
       window.clearTimeout(saveTimerRef.current);
+      if (pendingAutoSaveSnapshotRef.current === snapshot) {
+        pendingAutoSaveSnapshotRef.current = null;
+      }
     };
   }, [trip, dateRangeLabel, selectedTripId, sessionUserId, tripLoaded]);
 
@@ -1256,16 +1283,21 @@ function App() {
       return undefined;
     }
 
+    let isCurrent = true;
     const handleRemoteChange = () => {
-      if (isLocalRealtimeEcho()) {
+      if (isLocalRealtimeEcho() || hasUnsavedTripChanges()) {
         window.clearTimeout(realtimeTimerRef.current);
         return;
       }
 
       window.clearTimeout(realtimeTimerRef.current);
       realtimeTimerRef.current = window.setTimeout(() => {
+        const generation = saveGenerationRef.current;
+        const snapshot = latestTripRef.current;
+        if (!isCurrent || hasUnsavedTripChanges()) return;
         Promise.all([loadRemoteTrip(selectedTripId), listTripExpenses(selectedTripId)])
           .then(([remoteTrip, remoteExpenses]) => {
+            if (!isCurrent || generation !== saveGenerationRef.current || hasUnsavedTripChanges() || latestTripRef.current !== snapshot) return;
             skipNextSaveRef.current = true;
             setTrip(remoteTrip);
             setExpenses(remoteExpenses);
@@ -1274,6 +1306,7 @@ function App() {
             refreshCollaboration({ silent: true });
           })
           .catch((error) => {
+            if (!isCurrent || generation !== saveGenerationRef.current) return;
             setSyncStatus("error");
             setExpensesStatus("error");
             showToast({ type: "error", message: error.message });
@@ -1285,6 +1318,8 @@ function App() {
     const unsubscribeExpenses = subscribeToExpenseChanges(selectedTripId, handleRemoteChange);
 
     return () => {
+      isCurrent = false;
+      window.clearTimeout(realtimeTimerRef.current);
       unsubscribeTrip();
       unsubscribeExpenses();
     };
@@ -1819,8 +1854,12 @@ function App() {
     return Date.now() < localRealtimeSuppressionUntilRef.current;
   }
 
+  function hasUnsavedTripChanges() {
+    return saveInFlightRef.current || pendingSaveSnapshotRef.current || pendingAutoSaveSnapshotRef.current || conflictReloadInFlightRef.current;
+  }
+
   function queueTripSave(snapshot) {
-    if (!selectedTripId) {
+    if (!selectedTripId || conflictReloadInFlightRef.current) {
       return;
     }
 
@@ -1838,27 +1877,82 @@ function App() {
       return;
     }
 
+    const generation = saveGenerationRef.current;
     const snapshot = pendingSaveSnapshotRef.current;
+    const expectedUpdatedAt = tripUpdatedAtRef.current || snapshot.updatedAt;
     pendingSaveSnapshotRef.current = null;
     saveInFlightRef.current = true;
     suppressLocalRealtimeEcho();
-    replaceTripPayload(selectedTripId, snapshot)
-      .then(() => {
+    replaceTripPayload(selectedTripId, snapshot, expectedUpdatedAt)
+      .then((updatedAt) => {
+        if (generation !== saveGenerationRef.current) return;
+        if (updatedAt) {
+          tripUpdatedAtRef.current = updatedAt;
+        }
         suppressLocalRealtimeEcho();
         if (pendingSaveSnapshotRef.current) {
           flushQueuedTripSave();
           return;
         }
         saveInFlightRef.current = false;
-        setSyncStatus("saved");
+        setSyncStatus(pendingAutoSaveSnapshotRef.current ? "saving" : "saved");
         refreshTripSummaries({ silent: true });
       })
       .catch((error) => {
+        if (generation !== saveGenerationRef.current) return;
         saveInFlightRef.current = false;
         localRealtimeSuppressionUntilRef.current = 0;
+        if (isTripVersionConflict(error)) {
+          void reloadTripAfterConflict();
+          return;
+        }
         setSyncStatus("error");
         showToast({ type: "error", message: error.message });
       });
+  }
+
+  function isTripVersionConflict(error) {
+    return error?.code === "40001" || /changed elsewhere|version is required/i.test(error?.message ?? "");
+  }
+
+  async function reloadTripAfterConflict() {
+    if (!selectedTripId || conflictReloadInFlightRef.current) {
+      return;
+    }
+
+    const generation = saveGenerationRef.current;
+    conflictReloadInFlightRef.current = true;
+    window.clearTimeout(saveTimerRef.current);
+    pendingSaveSnapshotRef.current = null;
+    pendingAutoSaveSnapshotRef.current = null;
+    try {
+      const [remoteTrip, remoteExpenses] = await Promise.all([
+        loadRemoteTrip(selectedTripId),
+        listTripExpenses(selectedTripId)
+      ]);
+      if (generation !== saveGenerationRef.current) return;
+      const unsavedDraft = { ...latestTripRef.current, dateRangeLabel };
+      tripUpdatedAtRef.current = remoteTrip.updatedAt ?? "";
+      skipNextSaveRef.current = true;
+      setTrip(remoteTrip);
+      setExpenses(remoteExpenses);
+      setExpensesStatus("ready");
+      setSyncStatus("synced");
+      toast.message("The saved trip has changed. Kumi loaded the latest version; your unsaved draft is available to download before reapplying your edits.", {
+        duration: Infinity,
+        action: { label: "Download draft", onClick: () => downloadTripExport(unsavedDraft) }
+      });
+    } catch (error) {
+      if (generation !== saveGenerationRef.current) return;
+      const unsavedDraft = { ...latestTripRef.current, dateRangeLabel };
+      setSyncStatus("error");
+      toast.error(error.message, {
+        duration: Infinity,
+        action: { label: "Download draft", onClick: () => downloadTripExport(unsavedDraft) }
+      });
+    } finally {
+      if (generation === saveGenerationRef.current) conflictReloadInFlightRef.current = false;
+    }
   }
 
   function showToast({ type = "info", message }) {
@@ -2213,82 +2307,88 @@ function App() {
   }
 
   function moveScheduleItem(sourceDayId, itemId, targetDayId, targetStart) {
-    setTrip((current) => {
-      const sourceDay = current.days.find((day) => day.id === sourceDayId);
-      const targetDay = current.days.find((day) => day.id === targetDayId);
-      const sourceItem = sourceDay?.schedule.find((item) => item.id === itemId);
-      if (!sourceDay || !targetDay || !sourceItem || !targetStart) {
-        return current;
-      }
+    const sourceDay = trip.days.find((day) => day.id === sourceDayId);
+    const targetDay = trip.days.find((day) => day.id === targetDayId);
+    const sourceItem = sourceDay?.schedule.find((item) => item.id === itemId);
+    if (!sourceDay || !targetDay || !sourceItem || !targetStart) {
+      return;
+    }
 
-      const duration = Number(sourceItem.duration) || TIME_GRID_STEP_MINUTES;
-      if (!isScheduleSlotAvailable(targetDay.schedule, itemId, targetStart, duration)) {
-        return current;
-      }
+    const duration = Number(sourceItem.duration) || TIME_GRID_STEP_MINUTES;
+    if (!isScheduleSlotAvailable(targetDay.schedule, itemId, targetStart, duration)) {
+      return;
+    }
 
-      const movedItem = {
-        ...sourceItem,
-        start: targetStart,
-        city: sourceItem.city || targetDay.city
-      };
+    if (sourceDayId === targetDayId && sourceItem.start === targetStart) {
+      return;
+    }
 
-      return {
-        ...current,
-        days: current.days.map((day) => {
-          if (sourceDayId === targetDayId && day.id === sourceDayId) {
-            return {
-              ...day,
-              schedule: day.schedule.map((item) => (item.id === itemId ? movedItem : item))
-            };
-          }
+    const movedItem = {
+      ...sourceItem,
+      start: targetStart,
+      city: sourceItem.city || targetDay.city
+    };
+    const nextTrip = {
+      ...trip,
+      days: trip.days.map((day) => {
+        if (sourceDayId === targetDayId && day.id === sourceDayId) {
+          return {
+            ...day,
+            schedule: day.schedule.map((item) => (item.id === itemId ? movedItem : item))
+          };
+        }
 
-          if (day.id === sourceDayId) {
-            return { ...day, schedule: day.schedule.filter((item) => item.id !== itemId) };
-          }
+        if (day.id === sourceDayId) {
+          return { ...day, schedule: day.schedule.filter((item) => item.id !== itemId) };
+        }
 
-          if (day.id === targetDayId) {
-            return { ...day, schedule: [...day.schedule, movedItem] };
-          }
+        if (day.id === targetDayId) {
+          return { ...day, schedule: [...day.schedule, movedItem] };
+        }
 
-          return day;
-        })
-      };
-    });
+        return day;
+      })
+    };
+
+    setTrip(nextTrip);
   }
 
   function resizeScheduleItem(dayId, itemId, nextStart, nextDuration) {
-    setTrip((current) => {
-      const targetDay = current.days.find((day) => day.id === dayId);
-      const targetItem = targetDay?.schedule.find((item) => item.id === itemId);
-      if (!targetDay || !targetItem || !nextStart) {
-        return current;
-      }
+    const targetDay = trip.days.find((day) => day.id === dayId);
+    const targetItem = targetDay?.schedule.find((item) => item.id === itemId);
+    if (!targetDay || !targetItem || !nextStart) {
+      return;
+    }
 
-      const duration = Math.max(MIN_SCHEDULE_DURATION_MINUTES, Number(nextDuration) || MIN_SCHEDULE_DURATION_MINUTES);
-      if (!isScheduleSlotAvailable(targetDay.schedule, itemId, nextStart, duration)) {
-        return current;
-      }
+    const duration = Math.max(MIN_SCHEDULE_DURATION_MINUTES, Number(nextDuration) || MIN_SCHEDULE_DURATION_MINUTES);
+    if (!isScheduleSlotAvailable(targetDay.schedule, itemId, nextStart, duration)) {
+      return;
+    }
 
-      const resizedItem = {
-        ...targetItem,
-        start: nextStart,
-        duration
-      };
+    if (targetItem.start === nextStart && Number(targetItem.duration) === duration) {
+      return;
+    }
 
-      return {
-        ...current,
-        days: current.days.map((day) => {
-          if (day.id !== dayId) {
-            return day;
-          }
+    const resizedItem = {
+      ...targetItem,
+      start: nextStart,
+      duration
+    };
+    const nextTrip = {
+      ...trip,
+      days: trip.days.map((day) => {
+        if (day.id !== dayId) {
+          return day;
+        }
 
-          return {
-            ...day,
-            schedule: day.schedule.map((item) => (item.id === itemId ? resizedItem : item))
-          };
-        })
-      };
-    });
+        return {
+          ...day,
+          schedule: day.schedule.map((item) => (item.id === itemId ? resizedItem : item))
+        };
+      })
+    };
+
+    setTrip(nextTrip);
   }
 
   function openNewScheduleModal() {
